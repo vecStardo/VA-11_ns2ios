@@ -1,0 +1,12 @@
+d2r-mobile/
+.loopx/
+Gen/
+out/
+Resources/dm/
+
+# 游戏本体资源（汉化补丁 + NSZ），不入库
+赛博朋克酒保行动 Cyberpunk Bartender Action/
+
+# 主机端构建产物
+dm/host/dmhost_m3
+*.dSYM

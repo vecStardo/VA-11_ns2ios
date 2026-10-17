@@ -1,0 +1,2 @@
+# BUILD_ID	32d80c9afc27e2efebaa048b1e6a120c
+0xc68	8efd0a94	20008052	全	VA-11: boot strncmp(NULL,"True") without null check -> pin w0=1 (no preselected user)
