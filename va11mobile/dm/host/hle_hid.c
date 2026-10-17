@@ -528,8 +528,14 @@ HLE_FORCE("_ZN2nn3hid15InitializeMouseEv", "VA-11：鼠标初始化；状态由�
 typedef struct { uint64_t sampling; int32_t x, y, dx, dy; uint32_t button, attr; } MouseStateV;
 _Static_assert(sizeof(MouseStateV) == 0x20, "nn::hid::MouseState 布局");
 int dm_touch_mouse(int *x, int *y, int *down);
+int dm_click_step(int *down_x, int *down_y);
 static void mouse_fill(MouseStateV *s, int *first) {
     int x = 0, y = 0, down = 0; int have = dm_touch_mouse(&x, &y, &down);
+    {   // 帧同步点击队列：按下 / 按住 / 抬起各占一拍，保证游戏采样到干净的按下沿（d2r 的做法）
+        // Frame-synchronised click queue: press / hold / release each take one tick so the game samples a clean edge (d2r's approach)
+        int cx = 0, cy = 0;
+        if (dm_click_step(&cx, &cy)) { x = cx; y = cy; have = 1; down = 1; }
+    }
     static int32_t px = -1, py = -1; static uint64_t samp;
     memset(s, 0, sizeof *s);
     s->sampling = ++samp;

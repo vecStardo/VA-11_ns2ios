@@ -280,6 +280,10 @@ static void tap_schedule(void) {
 // Observed: with zh-Hans the game falls back to Japanese; with en-US the whole dialogue/prompt is Chinese. Default to en-US.
 static void set_default_language(void) {
     if (!getenv("DM_LANG")) setenv("DM_LANG", "en-US", 1);
+    // 掌机模式（真机 NS 掌机下游戏才提供「轻触」交互：菜单可用触屏点选）。iOS 手机形态与之最接近。
+    // Handheld mode: on a real Switch in handheld the game offers touch interaction (menus are tappable). An iPhone is
+    // closest to that form factor.
+    if (!getenv("DM_OPMODE")) setenv("DM_OPMODE", "0", 1);
 }
 
 // 诊断/验收：DM_TEST_HOVER="秒:x,y;..." 只把鼠标移到该位置（不按键），验证菜单「先悬停再点击」的时序。
@@ -313,6 +317,7 @@ static void tap_a_pulse(void) {
     // 6 拍 A（按下 120 ms、间隔 250 ms，共约 2 s）：标题提示会闪烁/存在状态窗口，单拍容易错过，连拍更稳。
     // Six A pulses (120 ms down, 250 ms apart, ~2 s total): the title prompt blinks / has state windows, so a single pulse
     // is easy to miss; a short burst is robust.
+    { extern void dm_click_request(float, float); dm_click_request(0.5f, 0.5f); }   // 帧同步鼠标点击（菜单点选）| frame-synced mouse click (menu selection)
     dm_kbd_press(0x28, 220);   // Enter（HID 0x28）：菜单/对话确认 | Enter (HID 0x28): menu/dialogue confirm
     dm_kbd_press(0x2C, 220);   // Space（HID 0x2C）：推进对白 | Space (HID 0x2C): advance dialogue
     for (int k = 0; k < 6; k++) {
@@ -357,7 +362,7 @@ static void step_schedule(void) {
                 dm_touch td = {0, 0.5f, 0.5f};
                 if (strcmp(op, "click") == 0) { float x = 0, y = 0; if (sscanf(arg, "%f,%f", &x, &y) == 2) { td.x = x; td.y = y; } }
                 LOG("[test] 步:%s (%.3f,%.3f)", op, td.x, td.y);
-                dm_touch_set(&td, 1); usleep(120000); dm_touch_set(NULL, 0);
+                dm_touch_set(&td, 1); usleep(65000); dm_touch_set(NULL, 0);   // 真机「轻触」更短；120 ms 时菜单无反应 | a real "tap" is shorter; 120 ms got no menu reaction
                 tap_a_pulse();
             }
             else if (strcmp(op, "key") == 0) { uint64_t m = pad_mask_of(arg); if (m) { pad_press(m); usleep(120000); pad_release(m); } }

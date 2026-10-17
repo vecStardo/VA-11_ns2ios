@@ -17,10 +17,45 @@
 #include "dm.h"
 #include "front.h"
 #include <pthread.h>
+#include <stdatomic.h>
+unsigned long long dm_guest_frame(void);
+static int32_t clampi(float v, int hi);   // 前向声明：点击队列在定义前用到 | forward declaration: the click queue uses it before the definition
 enum { F_EMPTY, F_DOWN, F_LIFTED };
 static struct { int st, reported, again; float x, y, ax, ay; } g_f[16];
 // 鼠标面状态（见下面 dm_touch_mouse）：最新触点位置与按键，抬起后位置保留 | mouse-surface state (see dm_touch_mouse below)
 static int32_t g_mx, g_my; static int g_mdown, g_mhave;
+// d2r 的做法（dm/ios front_ios.m 注释 / dm_cursor.c dm_ui_mouse_pump）：前端页面的点击不在前端线程直接生效，
+// 而是排进队列、在「游戏取手柄那一拍」按出图帧推进 —— 按下 / 按住 / 抬起各占若干帧，保证游戏一定采样到干净的按下沿。
+// 这里给 VA-11 加同样的帧同步点击队列：dm_click_request 只登记，真正的鼠标按钮状态由 mouse_fill（游戏每拍轮询）推进。
+// How d2r does it (dm/ios front_ios.m comment / dm_cursor.c dm_ui_mouse_pump): a front-end click is not applied on the front
+// thread; it is queued and advanced per presented frame at the controller read, with press/hold/release each taking several
+// frames so the game always samples a clean press edge. The same frame-synchronised click queue is added here: dm_click_request
+// only registers, and mouse_fill (polled by the game every tick) advances the actual mouse button state.
+static _Atomic int g_click_phase;   // 0 空闲；1 按下；2 按住；3 抬起 | 0 idle, 1 press, 2 hold, 3 release
+static _Atomic float g_click_x, g_click_y;
+void dm_click_request(float nx, float ny) {
+    g_click_x = nx; g_click_y = ny;
+    atomic_store(&g_click_phase, 1);
+}
+// 按「出图帧」推进：同一帧里多次取鼠标只算一拍（一次 GetMouseStates 可能被调用多层，不能每层都推进）
+// Advance per presented frame: several mouse reads within one frame count as one tick (GetMouseStates may be called several
+// times per frame, and it must not advance every call).
+int dm_click_step(int *down_x, int *down_y) {
+    static uint64_t last_fr; static int held;
+    int ph = atomic_load(&g_click_phase);
+    if (!ph) { held = 0; return 0; }
+    uint64_t fr = dm_guest_frame();
+    int advanced = 0;
+    if (fr != last_fr) { last_fr = fr; advanced = 1; }
+    if (!advanced) { if (!held) return 0; if (down_x) *down_x = clampi(atomic_load(&g_click_x), 1279); if (down_y) *down_y = clampi(atomic_load(&g_click_y), 719); return 1; }
+    if (ph == 1) { atomic_store(&g_click_phase, 2); held = 1; }
+    else if (ph == 2) { atomic_store(&g_click_phase, 3); held = 1; }
+    else { atomic_store(&g_click_phase, 0); held = 0; return 0; }
+    if (down_x) *down_x = clampi(atomic_load(&g_click_x), 1279);
+    if (down_y) *down_y = clampi(atomic_load(&g_click_y), 719);
+    return 1;
+}
+
 static int32_t clampi(float v, int hi);   // again/ax/ay：End 还没报出去时同 id 又按下（下次读先报 End 再报新 Start） | again/ax/ay: the same id was pressed again before End went out (the next read reports End first, then the new Start)
 static pthread_mutex_t g_tl = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_tsamp; static uint64_t g_tlast_ns;
@@ -73,6 +108,8 @@ static int32_t clampi(float v, int hi);
 // 悬停（诊断/验收用）：只更新鼠标位置、不改按键——用来验证「先 hover 再 click」这类菜单时序。
 // Hover (diagnostic / acceptance): update the mouse position without touching the button, to verify "hover first, then
 // click" menu timing.
+void dm_click_request(float nx, float ny);
+
 void dm_mouse_hover(float nx, float ny) {
     pthread_mutex_lock(&g_tl);
     g_mx = clampi(nx, 1279); g_my = clampi(ny, 719); g_mhave = 1;
@@ -93,7 +130,7 @@ int touch_fill(void *out, uint64_t now_ns) {
         if (!g_f[id].reported) { attr |= 1; g_f[id].reported = 1; }          // Start（本次第一次报） | Start (reported for the first time this time)
         else if (g_f[id].st == F_LIFTED) attr |= 2;                         // End（已报过 Start、已抬起） | End (Start already reported, already lifted)
         uint8_t *s = o + 0x10 + 0x28 * k++;
-        int32_t x = clampi(g_f[id].x, 1279), y = clampi(g_f[id].y, 719), d = 30, zero = 0, fid = id;
+        int32_t x = clampi(g_f[id].x, 1279), y = clampi(g_f[id].y, 719), d = 30, zero = 0, fid = id + 1;   // 真机 finger_id 从 1 起；0 可能被游戏当成无效 | real console finger ids start at 1; 0 may be treated as invalid
         memcpy(s + 0x00, &dt, 8); memcpy(s + 0x08, &attr, 4); memcpy(s + 0x0c, &fid, 4);
         memcpy(s + 0x10, &x, 4); memcpy(s + 0x14, &y, 4); memcpy(s + 0x18, &d, 4); memcpy(s + 0x1c, &d, 4); memcpy(s + 0x20, &zero, 4);
         if (attr & 2) {                                                      // End 报过：释放；若期间同 id 又按下，转成新的按下 | End has been reported: release; if the same id was pressed again in the meantime, turn it into a new press
