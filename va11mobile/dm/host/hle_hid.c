@@ -566,6 +566,33 @@ void dm_kbd_press(int code, int ms) {
 }
 static void kbd_clear(void) { for (int i = 0; i < 4; i++) atomic_store(&g_kbd_bits[i], 0); }
 
+// 诊断：DM_TEST_KBD="start_s:end_s:code[,code…]"，在时间窗内持续按住这些 HID 键码；
+// 位图同时写到 0x08/0x10/0x18/0x20/0x28/0x30/0x38 多个候选偏移，用于在不知道精确布局时也能被读到。
+// Diagnostic: DM_TEST_KBD=<start_s>:<end_s>:<code[,code...]> holds those HID keycodes inside the window; the bitmap is
+// written to several candidate offsets (0x08/0x10/0x18/0x20/0x28/0x30/0x38) so it is readable without knowing the exact layout.
+static void kbd_test_window(uint8_t *p) {
+    const char *e = getenv("DM_TEST_KBD");
+    if (!e || !*e) return;
+    static int parsed; static double t0, t1; static int codes[16]; static int ncodes;
+    if (!parsed) {
+        parsed = 1;
+        char buf[256]; strncpy(buf, e, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+        char *c1 = strchr(buf, ':'); char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+        if (c1 && c2) { *c1 = 0; *c2 = 0; t0 = atof(buf); t1 = atof(c1 + 1);
+            for (char *save, *tok = strtok_r(c2 + 1, ",", &save); tok && ncodes < 16; tok = strtok_r(NULL, ",", &save)) codes[ncodes++] = (int)strtol(tok, NULL, 0);
+        }
+        LOG("[hid-diag] 键盘测试窗 %.1f-%.1fs，键码数 %d", t0, t1, ncodes);
+    }
+    static uint64_t base_ns; static int inited;
+    if (!inited) { inited = 1; base_ns = now_ns(); }
+    double t = (double)(now_ns() - base_ns) / 1e9;
+    if (t < t0 || t >= t1 || ncodes == 0) return;
+    uint8_t map[32]; memset(map, 0, sizeof map);
+    for (int i = 0; i < ncodes; i++) { int c = codes[i] & 0xff; map[c >> 3] |= (uint8_t)(1u << (c & 7)); }
+    static const int offs[] = {8, 16, 24, 32, 40, 48, 56};
+    for (size_t i = 0; i < sizeof offs / sizeof offs[0]; i++) memcpy(p + offs[i], map, sizeof map);
+}
+
 HLE_FORCE("_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE", "VA-11：键盘真实状态（宿主注入的键在此生效）", int32_t, h_hid_GetKbd, void *out) {
     static uint64_t samp;
     uint64_t t = now_ns();
@@ -577,7 +604,8 @@ HLE_FORCE("_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE", "VA-11：键盘�
         memset(p, 0, 0x40);
         uint64_t sm = ++samp; memcpy(p, &sm, 8);
         for (int i = 0; i < 4; i++) { uint64_t v = atomic_load(&g_kbd_bits[i]); memcpy(p + 16 + i * 8, &v, 8); }
-        uint32_t attr = 1u; memcpy(p + 48, &attr, 4);
+        uint32_t attr = 1u;
+        kbd_test_window(p);
     }
     static int logged; if (!logged++) LOG("[hid-diag] 游戏开始轮询键盘状态（GetKeyboardState）");
     static uint64_t n; if (++n % 600 == 0) LOG("[hid-diag] 键盘轮询次数=%llu", (unsigned long long)n);
