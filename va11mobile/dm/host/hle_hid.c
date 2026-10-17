@@ -461,18 +461,22 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     receipt(s, id, style, km, read_start_ns);
 }
 
-HLE_FORCE("_ZN2nn3hid14InitializeNpadEv", "连 hid 服务；宿主从 dm_input 取输入", void, h_hid_InitNpad, void) {}
+HLE_FORCE("_ZN2nn3hid14InitializeNpadEv", "连 hid 服务；宿主从 dm_input 取输入", void, h_hid_InitNpad, void) {
+    { static int logged; if (!logged++) LOG("[hid-call] InitializeNpad 被调用"); }}
 HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEv", "连 hid 服务；触屏输入由前端另接", void, h_hid_InitTouch, void) {}
 HLE_FORCE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", "支持的手柄号；宿主固定（记录游戏声明，供诊断）", void, h_hid_SetIds, const uint32_t *ids, uint64_t n) {
+    { static int logged; if (!logged++) LOG("[hid-call] SetSupportedNpadIdType 被调用"); }
     static int logged; if (!logged++) { char buf[128] = {0}; for (uint64_t i = 0; i < n && i < 8; i++) { char t[16]; snprintf(t, sizeof t, "%u,", ids ? ids[i] : 0); strncat(buf, t, sizeof buf - strlen(buf) - 1); } LOG("[hid-diag] 游戏声明支持手柄号：%s", buf); }
 }
 // BitFlagSet<32> 按值传在 w 寄存器
 // BitFlagSet<32> is passed by value in a w register
 HLE_FORCE("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "支持的手柄样式；记录游戏声明（供诊断）", void, h_hid_SetStyles, uint32_t styles) {
+    { static int logged; if (!logged++) LOG("[hid-call] SetSupportedNpadStyleSet 被调用"); }
     static int logged; if (!logged++) LOG("[hid-diag] 游戏声明支持样式=%#x", styles);
 }
 HLE_FORCE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE", "掌机手柄激活方式；宿主固定", void, h_hid_SetHhMode, int m) { (void)m; }
-HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "手柄样式查询；跟 DM_OPMODE 走", uint32_t, h_hid_GetStyle, const uint32_t *id) { return style_of(*id); }
+HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "手柄样式查询；跟 DM_OPMODE 走", uint32_t, h_hid_GetStyle, const uint32_t *id) {
+    { static int logged; if (!logged++) LOG("[hid-call] GetNpadStyleSet 被调用"); } return style_of(*id); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", "全键手柄状态；取 dm_input", void, h_hid_GetFullKey, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_FULLKEY); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", "掌机手柄状态；取 dm_input", void, h_hid_GetHandheld, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_HANDHELD); }
 
@@ -505,7 +509,8 @@ HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_E
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", "VA-11：双手柄状态；取 dm_input", void, h_hid_GetJoyDual, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_FULLKEY); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", "VA-11：左手柄状态；取 dm_input", void, h_hid_GetJoyLeft, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_HANDHELD); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj", "VA-11：右手柄状态；取 dm_input", void, h_hid_GetJoyRight, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_FULLKEY); }
-HLE_FORCE("_ZN2nn3hid15InitializeMouseEv", "VA-11：鼠标初始化；状态由触屏面合成", void, h_hid_InitMouse, void) {}
+HLE_FORCE("_ZN2nn3hid15InitializeMouseEv", "VA-11：鼠标初始化；状态由触屏面合成", void, h_hid_InitMouse, void) {
+    { static int logged; if (!logged++) LOG("[hid-call] InitializeMouse 被调用"); }}
 // 鼠标状态：nn::hid::MouseState（0x28）= { u64 sampling; s32 x, y, delta_x, delta_y; u32 button; u32 attribute }。
 // VA-11 的 GM runner 用鼠标事件做点选；Switch 没有鼠标，这里把前端触屏（hle_touch.c 的鼠标面）报成鼠标：
 // 位置 = 最新触点的面板坐标（1280x720），按下 = 左键（button bit0）。
@@ -551,7 +556,8 @@ HLE_FORCE("_ZN2nn3hid13GetMouseStateEPNS0_10MouseStateE", "VA-11：单个鼠标�
     if (!out) return 0;
     int first = 1; mouse_fill((MouseStateV *)out, &first); return 1;
 }
-HLE_FORCE("_ZN2nn3hid18InitializeKeyboardEv", "VA-11：键盘；前端另接", void, h_hid_InitKbd, void) {}
+HLE_FORCE("_ZN2nn3hid18InitializeKeyboardEv", "VA-11：键盘；前端另接", void, h_hid_InitKbd, void) {
+    { static int logged; if (!logged++) LOG("[hid-call] InitializeKeyboard 被调用"); }}
 // VA-11 的 GameMaker runner 在菜单/对话里是**轮询键盘**的（实测 GetKeyboardState 每秒 600+ 次），
 // 之前宿主返回全 0 键盘 → A/鼠标都进不去。这里提供键盘注入原语，并把按键写进 KeyboardState。
 // The GameMaker runner polls the keyboard in menus/dialogue (GetKeyboardState measured 600+/s), and the host used to
@@ -611,8 +617,10 @@ HLE_FORCE("_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE", "VA-11：键盘�
     static uint64_t n; if (++n % 600 == 0) LOG("[hid-diag] 键盘轮询次数=%llu", (unsigned long long)n);
     return 1;
 }
-HLE_FORCE("_ZN2nn3hid18GetNpadJoyHoldTypeEv", "VA-11：手柄握法固定值", int32_t, h_hid_GetHold, void) { return 0; }
-HLE_FORCE("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "VA-11：握法不接", void, h_hid_SetHold, int m) { (void)m; }
+HLE_FORCE("_ZN2nn3hid18GetNpadJoyHoldTypeEv", "VA-11：手柄握法固定值", int32_t, h_hid_GetHold, void) {
+    { static int logged; if (!logged++) LOG("[hid-call] GetNpadJoyHoldType 被调用"); } return 0; }
+HLE_FORCE("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "VA-11：握法不接", void, h_hid_SetHold, int m) {
+    { static int logged; if (!logged++) LOG("[hid-call] SetNpadJoyHoldType 被调用"); } (void)m; }
 HLE_FORCE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", "VA-11：Joy 分配不接", void, h_hid_AssignDual, const uint32_t *id) { (void)id; }
 HLE_FORCE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKj", "VA-11：Joy 分配不接", void, h_hid_AssignSingle, const uint32_t *id) { (void)id; }
 HLE_FORCE("_ZN2nn3hid21StartLrAssignmentModeEv", "VA-11：LR 分配不接", void, h_hid_StartLr, void) {}
