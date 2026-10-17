@@ -69,3 +69,50 @@
 1. 用 `DM_HID_DIAG` 抓一次「键盘注入时游戏读到什么」（把注入的位图打印出来）确认注入生效；
 2. 逐键扫描（Enter/Space/Z/X/方向键）看菜单是否响应，找出 GM runner 的确认键映射；
 3. 若键盘布局不对，按 libnx `HidKeyboardState` 实际字段修正（keys 位置/大小、attributes 偏移）。
+
+## 追加：键盘多键/多偏移注入仍未让菜单跳转（2026-10-18 02:0x）
+
+用 `DM_TEST_KBD="150:260:0x28,0x2c,0x1d,0x2b"`（Enter/Space/Z/Tab，持续 110 秒）+ 多候选偏移写入位图，
+标题菜单依旧停在 `新游戏/读取/设置`（截图 `iosapp/out/kw2_rot.png`）。
+
+→ 说明「键盘就是菜单确认通道」这个假设**未获支持**（至少按我们的键码/布局假设不成立）。
+下一个高价值验证：直接看 GML 侧读数——在 `hle_hid.c` 里对 **GetMouseStates / GetNpadState / GetKeyboardState**
+三者的调用频率与「服务值」做一秒一条的对照日志，确认在点击/按键瞬间游戏实际读到了什么（而不是我们以为的什么）。
+
+## 追加：runner 的输入栈入口全部被调用（2026-10-18 02:0x，commit a4953d5）
+
+```
+[hid-call] InitializeKeyboard 被调用
+[hid-call] InitializeMouse 被调用
+[hid-call] InitializeNpad 被调用
+[hid-call] SetSupportedNpadIdType 被调用
+[hid-call] SetNpadJoyHoldType 被调用
+[hid-call] SetSupportedNpadStyleSet 被调用
+[hid-call] GetNpadJoyHoldType 被调用
+[hid-call] GetNpadStyleSet 被调用
+```
+
+**结论**：GameMaker runner 的三路输入（手柄/鼠标/键盘）都走完整初始化，配置接口也都调了；
+配合此前「三路状态都确认送达」→ 输入链路**本身没有问题**。
+
+但：
+- 菜单态下**游戏不绘制鼠标光标**（多帧截图都没有），与早前 `evidence_title.png` 里出现手形光标的状态不同；
+- 悬停 + 移动路径 + 点击「新游戏」位置均无反应（`out/hp2_rot.png`）。
+
+→ 高置信判断：当前画面是 **attract 演示态**（菜单只是演示的一部分），交互菜单在另一个状态；
+下一步应先用**多帧序列**确认状态机（是否循环回「按 A 键开始游戏」），再找一个真正可交互的状态。
+
+## 追加：两种排除（2026-10-18 02:2x）
+
+1. **换运行模式**：`DM_OPMODE=0`（掌机）时 runner 改为轮询 `id=32 style=2`（NpadHandheld），
+   宿主也照常服务（日志 4 条），但标题菜单仍不响应（`out/hh2_rot.png`）。
+2. **Y 轴翻转**：按镜像 Y（0.19）依次点「新游戏/读取/设置」三个位置，仍无反应（`out/yf2_rot.png`）。
+
+→ 坐标口径与运行模式都不是原因；结合「菜单态无鼠标光标」，继续指向 attract 演示态/状态机。
+
+## 另一个可查线索
+game.win 的 GML 里有一整组 Switch 专用封装：
+`switch_gamepad_button_check/pressed/released`、`switch_event_mouse`、`switch_controller_support_show`、
+`switch_controller_set_supported_styles`、`switch_get_operation_mode`、`switch_lstick_active` 等。
+说明游戏自己包了一层输入层；下一步可以直接看这组脚本的字节码（需要 GML 反汇编），
+或观察它们在运行期是否被调用（host 侧看不出，需在 guest 里打桩/断点）。
