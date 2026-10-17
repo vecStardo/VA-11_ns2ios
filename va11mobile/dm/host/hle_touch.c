@@ -26,6 +26,14 @@ static pthread_mutex_t g_tl = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_tsamp; static uint64_t g_tlast_ns;
 
 void dm_touch_set(const dm_touch *t, int n) {
+    {   // 诊断：每次前端/脚本推触点都记一行（按下/抬起、坐标），定位「卡住的触点」来自哪条路径
+        // Diagnostic: log every touch-set push (down/up, coordinates) to find which path leaves a stuck touch
+        static int lg = -1; if (lg < 0) lg = getenv("DM_TOUCH_TRACE") != NULL;
+        if (lg) {
+            if (n > 0 && t) LOG("[touch-trace] 推 %d 点 #0 id=%u (%.3f,%.3f)", n, t[0].id, t[0].x, t[0].y);
+            else LOG("[touch-trace] 推 0 点（抬起全部）");
+        }
+    }
     pthread_mutex_lock(&g_tl);
     int seen[16] = {0};
     for (int i = 0; i < n; i++) {

@@ -497,8 +497,11 @@ _Static_assert(sizeof(TouchState16) == 0x290, "TouchScreenState<16>");
 int touch_fill(void *out, uint64_t now_ns);
 HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi", "触屏状态：前端触点（hle_touch.c）", int, h_hid_GetTouch, TouchState16 *out, int n) {
     if (n < 1) return 0;
-    touch_fill(out, guest_ns());
-    return 1;
+    // 真机按请求份数填满并返回份数（游戏要 16 份、只看第 0 份）；只填 1 份、返回 1 可能被游戏当成「没有可读状态」而忽略输入。
+    // Fill all requested entries and return that count like the real console does (the game asks for 16 and looks at entry 0);
+    // filling only one entry and returning 1 may be treated as "no readable state" and the input is ignored.
+    for (int i = 0; i < n; i++) touch_fill(&out[i], guest_ns());
+    return n;
 }
 
 // ---- VA-11 移植：GM runner 直接调用的其余 hid 面。状态结构与 FullKey/Handheld 同布局（0x28）；
@@ -646,9 +649,11 @@ HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoE
     // 实锤(观察点)：guest 传进来的 res 是 8 字节缓存(main+0xafccf8)，runner 只检查返回值
     // (x8=w0&0x3fffff, 期待 0x183aca)而从不读 res 内容——memset 0x90 会把紧邻的 gamepad
     // 设备 wrapper(首帧 GML 查询的 main+0x127574 崩溃源头)清零。零写入，直接给确认结果。
-    // Verified by watchpoint: the guest's res is an 8-byte cache (main+0xafccf8); the runner only
-    // checks the return value and never reads res -- memset(0x90) zeroed the adjacent gamepad
-    // device wrapper, the source of the first-frame crash at main+0x127574. Write nothing.
+    // Verified by watchpoint: the guest's res is an 8-byte cache (main+0xafccf8); the runner only checks the return value
+    // and never reads res -- memset 0x90 zeroed the adjacent gamepad device wrapper, the source of the first-frame crash at
+    // main+0x127574. Write nothing.
+    // 复核（2026-10-18）：写入 playerCount=1 的尝试对菜单无影响，保持零写入，避免碰 guest 相邻数据。
+    // Re-check (2026-10-18): writing playerCount=1 had no effect on the menu; keep it untouched to avoid touching adjacent guest data.
     (void)res; (void)arg; return 0x183aca;
 }
 HLE_FORCE("_ZN2nn3hid24ShowControllerStrapGuideEv", "VA-11：腕带指南不显示", int32_t, h_hid_Strap, void) { return 0; }

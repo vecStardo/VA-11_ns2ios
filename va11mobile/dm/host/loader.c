@@ -347,6 +347,11 @@ static void map_image(module_t *m, const char *dir) {
     m->base = (uint8_t *)base; install_key_page(m);
 }
 #else
+// 桌面：主可执行文件自己的映像头（force_init 取 __DATA,swforce 段用）。
+// Desktop: the main executable's own image header (used by force_init to fetch __DATA,swforce).
+#include <mach-o/dyld.h>
+#include <crt_externs.h>
+static const struct mach_header_64 *image_mh(void) { return (const struct mach_header_64 *)_NSGetMachExecuteHeader(); }
 static uint8_t *slurp(const char *path, size_t *n) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) die("open %s", path);
