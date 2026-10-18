@@ -65,6 +65,10 @@ DM_PATCHED=~/va11-work/patched ./build.sh
 台词文本会在出包时从 `赛博朋克酒保行动 …/romfs/scripts/{eng,chn,jp}` 打进 `Resources/dm/`，
 App 首次启动复制到 `Documents/save/<lang>/`（`seed_dialog_texts()`）。
 
+> **要「不含游戏内容」的干净包**：`DM_TEXTS_ROMFS=/nonexistent ./build.sh` —— 不内置台词
+> （IPA ~16 MB），用户需自行把 `eng/` 或 `chn/` 放进 `Documents/save/`。
+> 注意 `game.win` 本身就是完整游戏数据包（代码+贴图+音频+文本），永远不进仓库、也不要公开分发。
+
 ### 4. 验证清单（按顺序看 `Documents/boot.txt`）
 
 1. `[boot] game.win: 在` + `SHELL-OK`；

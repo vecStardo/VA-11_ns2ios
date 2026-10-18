@@ -43,9 +43,12 @@ for m in $MODS; do cp "$PATCHED/$m.fixups.tsv" "$PATCHED/$m.gates.tsv" Resources
 # Dialogue texts (romfs/scripts/<lang>): bundled under the product's dm/ folder; the app extracts them into
 # Documents/save/<lang> on first launch. Source: $DM_TEXTS_ROMFS (defaults to the repo's extracted romfs).
 TEXTS=${DM_TEXTS_ROMFS:-"$HERE/../../赛博朋克酒保行动 Cyberpunk Bartender Action/romfs/scripts"}
+# 每次都先清掉上次内置的台词，避免改了 DM_TEXTS_ROMFS 后旧台词仍被打进包
+# Always drop previously bundled dialogue texts first, so changing DM_TEXTS_ROMFS cannot leak stale files.
+for L in eng chn jp; do rm -rf "Resources/dm/$L"; done
 if [ -d "$TEXTS" ]; then
   for L in eng chn jp; do
-    [ -d "$TEXTS/$L" ] && { rm -rf "Resources/dm/$L"; cp -R "$TEXTS/$L" "Resources/dm/$L"; }
+    [ -d "$TEXTS/$L" ] && cp -R "$TEXTS/$L" "Resources/dm/$L"
   done
   echo "台词文本已内置：$(ls Resources/dm | tr '\n' ' ')"
 else

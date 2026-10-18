@@ -162,6 +162,21 @@ DM_PATCHED=~/va11-work/patched ./build.sh      # → out/Va11IOS-unsigned.ipa + 
   转成指标）与踩坑排序；
 - 完整调查流水：[`verify/INPUT-DIAG.zh-CN.md`](verify/INPUT-DIAG.zh-CN.md)。
 
+### 关于 `game.win` 与「不含游戏内容」的边界
+
+- **`game.win`（约 520 MB）就是完整的游戏数据包**：GML 字节码、全部贴图（TXTR 占大头）、音频、
+  字符串、房间/对象定义都在里面。它就是「游戏本体数据」，本仓库**从不**包含它，也永远不会提交；
+- 交付给用户的 IPA **默认会内置台词 `.ini`**（`eng/chn/jp`，来自用户自己游戏的 romfs，属于游戏文本内容），
+  这只是为了「装上就能玩」；如果你要一个**不含任何游戏内容的干净包**，用：
+  ```sh
+  cd va11mobile/iosapp
+  DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=~/va11-work/patched ./build.sh
+  ```
+  这样打出的 IPA 只有宿主代码（~16 MB），首次启动不会解台词，需要用户自己把
+  `eng/`（或 `chn/`）目录放进 `Documents/save/`；
+- 打过补丁的 `game.win` 属于**你自己游戏的修改副本**：只放自己设备、不要公开分享/上传到公共位置；
+- 仓库里只有源码、工具、文档与 App 图标；密钥（`prod.keys` 等）与游戏文件均在 `.gitignore`。
+
 ## 合法使用声明
 
 - **必须拥有正版游戏**。本仓库不含任何游戏程序、数据或美术资源，也不提供下载地址。
