@@ -1200,3 +1200,31 @@ tools/repro_day0.sh 80
    下一步把桩里 `ldr x30,[x30]` 的目标地址也记下来）；
 2. 记录 `argument` 指针与 `argument_count`，确认它拿到几个实参、实参类型；
 3. 对照 `day0control` 的初始化顺序（它先给 `global.*` 赋值再创建 textbox），找出「本该赋值却 undefined」的那一个。
+
+## 对照实验：去掉启动剪口 + 提供 preselected_user，错误不变（2026-10-18 17:5x）
+
+有人怀疑「boot 期那两条 VA-11 剪口（把 preselected_user 固定成 False / 无用户）改变了初始化路径」。
+做了一次干净对照：
+
+1. 用**不带 DM_FOREIGN_GAME 剪口**的改写产物（`~/va11-work/patched_nocut`，main.cuts.tsv 只有表头）重出 App；
+2. 同时在 App 的 `Documents/save/` 里放上 `preselected_user`（内容 `False`，5 字节）；
+3. 重新复现。
+
+结果：
+
+```
+[boot] SHELL-OK（载荷与游戏数据齐）
+[dm] fs open OK host:/preselected_user mode=1 size=5     ← 文件确实被读到
+Entering main loop.
+[dm] [va11] 非数组索引：源描述符 0x3f804e970 标签=16777215 下标=0 … 描述符内容=… 3ff0000000000000
+GM 报错数: 1、day0 栈: 1                                  ← 与带剪口时完全一致
+```
+
+**结论：与启动剪口、preselected_user 是否存在无关。** 另外注意：描述符地址（0x3f804e970）与内容跨多次运行
+**完全一致**，说明这个「未定义/未初始化」的值是**确定性产生的**（不是随机栈垃圾），
+是某条固定代码路径构造出来的值。
+
+### 下一轮
+1. 顺着「确定性构造」这一点，在数组取值 helper 里记录 **调用者帧的 x19（GML 实例）** 与几个关键字段，
+   对照 `temp_textbox`/`file_name` 这些名字的语义判断是哪个字段为空；
+2. 或者干脆把这一个 helper 的所有调用都记下来（前 N 次），比较「正常取值」和「报错取值」的上下文差异。
