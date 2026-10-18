@@ -10,3 +10,8 @@ Resources/dm/
 # 主机端构建产物
 dm/host/dmhost_m3
 *.dSYM
+
+# Switch 密钥 / 游戏本体（私人物料，禁止入库）
+prod.keys
+title.keys
+*.keys

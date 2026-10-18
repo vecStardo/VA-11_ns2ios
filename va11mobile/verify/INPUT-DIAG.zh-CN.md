@@ -290,3 +290,31 @@ A 按住数秒（`buttons=0x1` 连续多秒）与带落点点击都没有推进�
 - attract 循环的存在也解释了此前「按 A 没反应」的一大半现象：输入大概率没有作用在可交互状态上；
 - 仍需原版 game.win 对照来排除「汉化补丁把菜单对象改坏」；若补丁无问题，则下一步在对话状态下做输入验收，
   并考虑给壳加一个「跳过 attract 直接进标题菜单」的注入入口。
+
+## 原版 vs 汉化补丁 A/B 对照（2026-10-18 10:5x）
+
+用户把 `prod.keys` 放进仓库根目录后，成功拿到**未汉化原版 game.win**：
+- `nsz -D` 解 NSZ→NSP 可以，但 `nsz -x` 无法从 NSP 递归解出 NCA 内容（需要 title key，
+  `--titlekeys` 生成 title.keys 后 nsz 仍报 `MissingTitleKeyError`）；
+- 绕开 nsz：早前工具 `tools/va11_extract.py` 已把明文 dump（NCZ 段 cryptoType=1，无需 keys）解成
+  `~/va11-work/program.nca`；romfs 的 data 段就是 `FORM + len + GEN8` 的 GameMaker 容器。
+  新增 `tools/extract_original_game_win.py` 按该特征扫描落盘：
+  `game.win: 520720771 字节 @ 0x47e200, sha256 e860d56e709c1883…`（补丁版是 `ff5220e0…`，同尺寸）。
+
+模拟器同一 HLE、同一点按脚本（每 4 s 一次持续点按）分别跑两个 game.win：
+- **原版**：标题显示英文 `The Ballad of a Gay Ghost 1.2.3.0` + `Tap or press A to start`，
+  attract 播到酒吧场景旁白（`out/orig_90.png`），随后循环回标题（`out/og_140.png`）；
+- **汉化补丁版**：同样循环，只是 attract 内容显示中文旁白（`out/idle_105.png`）。
+
+**结论（重要）**：GameMaker runner 是官方 Switch runner，两个 game.win 都能被加载、出图、跑 attract；
+点按在**两个版本上都不推进标题** → **输入问题不是汉化补丁造成的**，而是我们的 HLE/host 输入路径。
+同时确认：NSZ 本体实际是 **1.2.3.0**，而汉化补丁标称只支持 1.0.1 → 补丁与本体版本不匹配是另一个独立问题
+（可能造成文本/界面错位，但不是本次输入问题的原因）。
+
+### 复现命令
+```
+nsz -D -o ~/va11-work/orig "…/[010086500D3C8000][v0].nsz"           # 解成 nsp
+python3 tools/va11_extract.py <ncz> ~/va11-work                      # 解出 program.nca（明文段）
+python3 tools/extract_original_game_win.py ~/va11-work/program.nca ~/va11-work/orig/game.win
+cp ~/va11-work/orig/game.win <App 容器>/Documents/save/game.win      # 模拟器对照用
+```
