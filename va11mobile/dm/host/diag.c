@@ -526,6 +526,49 @@ static void va11_array_obs(const uint64_t *regs) {
           fp = nfp; if (fp & 7) break;
       }
       cl[u] = 0; LOG("[va11] GML 调用链：%s", cl); }
+    // 运行期向上扫函数序言：从 caller 往回最多 0x4000 字节，找 stp x29,x30,[sp,#-imm]! (字节 fd 7b ?? a9)
+    // 或 sub sp,sp,#imm (d10?????) 作为「函数入口」候选，打最近的一个及其后 0x80 字节，用于看
+    // textbox_loadbox 入口是怎么取实参的（GML 的 argument 数组指针来自 TLS）。
+    // Runtime backward prologue scan: walk up to 0x4000 bytes back from the caller looking for
+    // stp x29,x30,[sp,#-imm]! (bytes fd 7b ?? a9) or sub sp,sp,#imm (d10?????) as function-entry candidates; log the nearest
+    // one plus 0x80 bytes of code to see how textbox_loadbox fetches its arguments (GML's argument array pointer comes from TLS).
+    { uintptr_t ca = (uintptr_t)regs[30];
+      const size_t BACK = 0x4000; uint8_t *buf = malloc(BACK); vm_size_t got = 0;
+      if (buf && ca > BACK && vm_read_overwrite(mach_task_self(), (vm_address_t)(ca - BACK), BACK, (vm_address_t)buf, &got) == KERN_SUCCESS && got == BACK) {
+          uintptr_t best = 0;
+          for (size_t i = BACK - 4; i >= 4; i -= 4) {
+              uint32_t w; memcpy(&w, buf + i, 4);
+              int is_stp_pre = ((w & 0xff8003ffu) == 0xa98003fdu) || ((w & 0xffff83ffu) == 0xa9a003fdu);
+              int is_sub_sp = (w & 0xffc003ffu) == 0xd10003ffu;
+              if ((is_stp_pre && (w & 0x00007c00u) != 0) || is_sub_sp) {
+                  // 跳过「TLS 间接调用桩」：它的第二条指令是 mrs x30, tpidrro_el0（字节 de d0 3b d5）。
+                  // Skip the TLS indirect-call stub: its second instruction is mrs x30, tpidrro_el0 (bytes de d0 3b d5).
+                  int is_stub = (i + 8 <= BACK) && buf[i + 4] == 0x7e && buf[i + 5] == 0xd0 && buf[i + 6] == 0x3b && buf[i + 7] == 0xd5;
+                  if (is_stub) continue;
+                  best = ca - BACK + i; break;
+              }
+              if (i < 4) break;
+          }
+          if (best) {
+              uint8_t cb[0x80]; vm_size_t cg = 0; char ch[3 * 0x80 + 1]; size_t co = 0;
+              if (vm_read_overwrite(mach_task_self(), (vm_address_t)best, 0x80, (vm_address_t)cb, &cg) == KERN_SUCCESS && cg == 0x80) {
+                  for (size_t i2 = 0; i2 < cg && co + 3 < sizeof ch; i2++) co += (size_t)snprintf(ch + co, sizeof ch - co, "%02x", cb[i2]);
+                  ch[co] = 0;
+                  LOG("[va11] 疑似函数入口 %p（入口后 0x80 字节）: %s", (void *)best, ch);
+              }
+          } else {
+              // 没找到序言：直接把 caller 前 0x2000 字节分块 dump 出来，离线反汇编人工找入口。
+              // No prologue found: dump the 0x2000 bytes before the caller in chunks for an offline manual disassembly.
+              const size_t CH = 0x400;
+              for (size_t c = 0; c < BACK && c + CH <= BACK; c += CH) {
+                  char chh[3 * 0x400 + 1]; size_t co2 = 0;
+                  for (size_t i2 = 0; i2 < CH && co2 + 3 < sizeof chh; i2++) co2 += (size_t)snprintf(chh + co2, sizeof chh - co2, "%02x", buf[c + i2]);
+                  chh[co2] = 0;
+                  LOG("[va11] CODE%04zx %p %s", c, (void *)(ca - BACK + c), chh);
+              }
+          }
+      }
+      free(buf); }
     LOG("[va11] 非数组索引：源描述符 %p 标签=%u 下标=%lld 目标=%p 调用者=%p 描述符内容=%016llx %016llx %016llx",
         (void *)(uintptr_t)src, tag, (long long)(int64_t)(int32_t)idx,
         (void *)(uintptr_t)regs[0], (void *)(uintptr_t)regs[30],
