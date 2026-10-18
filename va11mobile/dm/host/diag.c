@@ -442,6 +442,9 @@ static void setlang_obs(const uint64_t *regs) {
 // VA-11: observation at the GML "index a value" helper entry (OBS_ARRAY, inserted offline at main+0x18090).
 // Logs only when the source is not an array: x0 = destination value, x1 = source descriptor ([x1+0xc]&0xffffff is the
 // type tag, 2 = array), x2 = index.
+// 给调试器用的失败钩子：非数组索引发生时调用（空实现，lldb 在这里下断点即可抓到现场）。
+// Debugger hook: called when a non-array index happens (empty; set an lldb breakpoint here to catch the site).
+__attribute__((noinline)) void dm_array_fail_hook(void) { __asm__ volatile(""); }
 int dm_host_readable(const void *addr, size_t len);
 static void va11_array_obs(const uint64_t *regs) {
     uint64_t src = regs[1], idx = regs[2];
@@ -474,6 +477,8 @@ static void va11_array_obs(const uint64_t *regs) {
       rn = 0; rpos = 0;
     }
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
+    dm_array_fail_hook();                       // 调试器断点处（lldb: breakpoint set -n dm_array_fail_hook）
+
     static int n; if (n++ > 40) return;
     uint64_t w0 = 0, w1 = 0, w2 = 0;
     if (dm_host_readable((const void *)(uintptr_t)src, 0x18)) {
