@@ -552,7 +552,11 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     HP(path);
     if (mode & (MODE_WRITE | MODE_APPEND)) RW();
     int fd = open(hp, (mode & (MODE_WRITE | MODE_APPEND)) ? ((mode & MODE_READ) ? O_RDWR : O_WRONLY) : O_RDONLY);
-    if (fd < 0) { if (getenv("DM_FS")) LOG("fs open 失败 %s mode=%d → %s (errno=%d)", path, mode, hp, errno); return err_res("open", hp); }   // VA-11 调试：失败路径可见 | VA-11 debug: visible failure paths
+    // 诊断：失败一律打；成功时只要路径像剧本/文本/romfs 也打（用来判断 day0 对话框创建时是否在读外部台词文件）。
+    // Diagnostic: always log failures; on success also log paths that look like scripts/text/romfs (to tell whether the day0
+    // dialogue box creation reads external dialogue files at all).
+    if (fd < 0) { LOG("fs open 失败 %s mode=%d → %s (errno=%d)", path, mode, hp, errno); return err_res("open", hp); }
+    if (strstr(path, "script") || strstr(path, ".txt") || strstr(path, "rom") || strstr(path, "romfs")) { struct stat sst; if (!fstat(fd, &sst)) LOG("fs open OK %s mode=%d size=%lld", path, mode, (long long)sst.st_size); }
     struct stat st; fstat(fd, &st);
     if (S_ISDIR(st.st_mode)) { close(fd); return RES_PATH_NOT_FOUND; }
     if (fd >= (int)sizeof g_fmode) die("fd 超出表");
