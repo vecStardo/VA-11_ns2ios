@@ -1343,3 +1343,39 @@ DM_HLE_TOLERANT=1 DM_SAVE=~/va11-work/run_mac/save DM_TEMP=... DM_ROMFS=... \
    比模拟器加日志快一个数量级；
 2. 若补 GL 成本高，可先做「**无渲染调试模式**」：让 EGL 垫片返回假 context/dummy 函数指针，
    只求跑到 day0 对话框（我们需要的只是 GML 逻辑，不需要画面）。
+
+## 桌面 headless 跑通并复现同一个 bug（2026-10-18 20:3x）——调试进入快车道
+
+两步改动（都在桌面宿主侧，产品 iOS 行为不变）：
+
+1. **`DM_HEADLESS=1`**（`hle_egl.m`）：没有 GL 上下文也能把游戏跑起来。所有 `gl*` 导入指向空实现，
+   `glGetString` 返回合理字符串（sdk 会 strlen 它），`eglCreateContext/MakeCurrent/SwapBuffers` 变假操作。
+   → 桌面宿主从 `glGetError` 崩溃变成**顺利打印 `Entering main loop.`**；
+2. **`DM_TAP="ms:x,y;ms:x,y;…"`**（`hle_touch.c` + `hle_va11.m` 构造期启动）：按时间表注入触点
+   （按住 250 ms → 抬起 → 帧同步鼠标点击），与 iOS 前端真实点按同一路径。
+
+运行方式：
+
+```
+DM_HEADLESS=1 DM_HLE_TOLERANT=1 DM_TAP="12000:0.5,0.5;20000:0.12,0.15;27000:0.37,0.75;31000:0.37,0.75" \
+  ./dmhost_m3 ~/va11-work/patched_obs main sdk subsdk0 subsdk1
+```
+
+**结果：桌面宿主完整复现同一个 bug**——
+
+```
+[dm] [tap] … 点按 …
+[dm] [va11] 非数组索引：源描述符 0x3f804e970 标签=16777215 下标=0 目标=0x3f814bef0
+ERROR in … gml_Object_dialog_control_Create_0
+```
+
+- 描述符地址/内容与模拟器、真机**完全一致** → 确认这是纯逻辑问题，与图形/触摸无关；
+- 一轮复现只要 ~55 秒，而且**可以挂 lldb**：断点直接下在 `main+0x18090`（数组 helper）或
+  `main+0x2eb60`（show_message），交互式看寄存器/栈/内存，不再靠「加日志 + 等两分钟」。
+
+### 下一轮（重点）
+用 lldb 在桌面宿主上：
+1. 断 `main+0x18090`，条件「标签 != 2」时停下，`bt`/`register read`/`memory read` 看清 `x1`（源值）与
+   调用者栈帧；
+2. 断 `main+0x2eb60`（show_message）确认错误上下文；
+3. 顺着 `x25` 的来源（上一轮已知：`bl +0x4f4` 的返回值 → `mov x25,x0`）反查那个运行时函数返回了什么。

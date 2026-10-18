@@ -194,3 +194,7 @@ HLE_FORCE("_ZN2nn4diag6detail9AbortImplEPKcS3_S3_i", "VA-11：SDK 断言中止�
     _exit(43);
     return RES_OK;
 }
+
+// 调试触点脚本入口（DM_TAP）：构造期启动，主机起来就跑（桌面 headless 与 iOS 都可用）。
+// Debug tap-script entry (DM_TAP): started from a constructor so it runs as soon as the host is up (headless desktop and iOS).
+__attribute__((constructor)) static void dm_tap_ctor(void) { void dm_tap_start(void); dm_tap_start(); }

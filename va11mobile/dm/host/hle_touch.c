@@ -17,6 +17,7 @@
 #include "dm.h"
 #include "front.h"
 #include <pthread.h>
+#include <unistd.h>
 #include <stdatomic.h>
 unsigned long long dm_guest_frame(void);
 static int32_t clampi(float v, int hi);   // 前向声明：点击队列在定义前用到 | forward declaration: the click queue uses it before the definition
@@ -59,6 +60,37 @@ int dm_click_step(int *down_x, int *down_y) {
 static int32_t clampi(float v, int hi);   // again/ax/ay：End 还没报出去时同 id 又按下（下次读先报 End 再报新 Start） | again/ax/ay: the same id was pressed again before End went out (the next read reports End first, then the new Start)
 static pthread_mutex_t g_tl = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_tsamp; static uint64_t g_tlast_ns;
+
+
+// 调试用触点脚本（桌面与 iOS 通用）：DM_TAP="毫秒:x,y;毫秒:x,y;..."，到点把该点按住 250 ms 再抬起，
+// 抬起时补一次帧同步鼠标点击（与 iOS 前端的点按路径一致）。桌面 headless 下用它把游戏驱动到目标界面。
+// Debug tap script (desktop and iOS): DM_TAP="ms:x,y;ms:x,y;..."; at each time hold the point for 250 ms, release, and
+// issue a frame-synced mouse click (same path as a real tap on iOS). Used on the headless desktop host to drive the game.
+static void *dm_tap_thread(void *unused) {
+    (void)unused;
+    const char *e = getenv("DM_TAP");
+    if (!e || !*e) return NULL;
+    char buf[512]; strncpy(buf, e, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+    uint64_t t0 = now_ns();
+    for (char *save = NULL, *tok = strtok_r(buf, ";", &save); tok; tok = strtok_r(NULL, ";", &save)) {
+        double when = 0; float x = 0.5f, y = 0.5f;
+        if (sscanf(tok, "%lf:%f,%f", &when, &x, &y) != 3) continue;
+        uint64_t due = t0 + (uint64_t)(when * 1e6);
+        while (now_ns() < due) usleep(2000);
+        dm_touch td = {0, x, y};
+        dm_touch_set(&td, 1); usleep(250000); dm_touch_set(NULL, 0);
+        dm_click_request(x, y);
+        LOG("[tap] %.0f ms 点按 (%.3f,%.3f)", when, x, y);
+    }
+    return NULL;
+}
+void dm_tap_start(void) {
+    static int started;
+    if (started++) return;
+    pthread_t th;
+    if (pthread_create(&th, NULL, dm_tap_thread, NULL)) LOG("【红】DM_TAP 线程起不来");
+    else pthread_detach(th);
+}
 
 void dm_touch_set(const dm_touch *t, int n) {
     {   // 诊断：每次前端/脚本推触点都记一行（按下/抬起、坐标），定位「卡住的触点」来自哪条路径

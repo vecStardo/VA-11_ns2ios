@@ -20,6 +20,25 @@ static NSOpenGLContext *g_ctx_main;
 static EGLContext g_cur_ctx;
 void hle_egl_set_view(void *view) { g_glview = (__bridge NSOpenGLView *)view; }
 
+// 无渲染调试模式（DM_HEADLESS=1）：桌面宿主没有 GL 上下文时也能把游戏跑到逻辑阶段（我们要调试的是 GML 逻辑，
+// 不是画面）。所有 gl* 导入指向同一个空实现，egl* 返回假句柄，makeCurrent/swap 变空操作。
+// Headless debug mode (DM_HEADLESS=1): with no GL context the desktop host can still bring the game up to its logic
+// stages (what we debug is GML logic, not pixels). Every gl* import points at one no-op, egl* returns dummy handles and
+// makeCurrent/swap become no-ops.
+static int dm_headless(void) { static int h = -1; if (h < 0) { const char *e = getenv("DM_HEADLESS"); h = (e && *e) ? 1 : 0; } return h; }
+static int32_t dm_gl_noop(void) { return 0; }
+// headless 下少数「必须返回字符串」的查询：sdk 会 strlen 这些结果，返回 0 会崩。
+// Headless: a few queries must return strings (the SDK strlen()s them; returning 0 crashes).
+static const unsigned char *dm_gl_get_string(unsigned name) {
+    switch (name) {
+    case 0x1F00: return (const unsigned char *)"Apple";                    // GL_VENDOR
+    case 0x1F01: return (const unsigned char *)"Apple Software Renderer";  // GL_RENDERER
+    case 0x1F02: return (const unsigned char *)"OpenGL ES 2.0";            // GL_VERSION
+    case 0x8B8C: return (const unsigned char *)"OpenGL ES GLSL ES 1.00";   // GL_SHADING_LANGUAGE_VERSION
+    default: return (const unsigned char *)"";
+    }
+}
+
 HLE_FORCE("eglGetDisplay", "GM：EGL 默认显示 → 宿主静态句柄", EGLDisplay, h_egl_GetDisplay, void *id) { (void)id; return (EGLDisplay)0xE1D1; }
 HLE_FORCE("eglInitialize", "GM：显示初始化 → 成功（GLES 2.0）", EGLBoolean, h_egl_Initialize, EGLDisplay d, int32_t *maj, int32_t *mnr) {
     (void)d; if (maj) *maj = 1; if (mnr) *mnr = 4; LOG("[egl] initialize"); return 1;
@@ -29,6 +48,7 @@ HLE_FORCE("eglChooseConfig", "GM：选配置 → 单一 RGBA8888 配置", EGLBoo
 }
 HLE_FORCE("eglCreateContext", "GM：建上下文 → NSOpenGLContext", EGLContext, h_egl_CreateContext, EGLDisplay d, EGLConfig c, EGLContext share, const int32_t *attr) {
     (void)d; (void)c; (void)share; (void)attr;
+    if (dm_headless()) { LOG("[egl] headless：返回假上下文"); return (EGLContext)0xC0DE; }
     if (!g_glview) { LOG("【红】eglCreateContext：前端还没给 GL 视图"); return NULL; }
     // 直接用 view 自带的 context：天然已挂载到视图；自建的 context 走 setView: 会在客体线程
     // 触发 AppKit 断言（EXC_BAD_INSTRUCTION）。
@@ -42,6 +62,7 @@ HLE_FORCE("eglCreateWindowSurface", "GM：窗口面 → 宿主静态面（视图
 }
 HLE_FORCE("eglMakeCurrent", "GM：绑定上下文", EGLBoolean, h_egl_MakeCurrent, EGLDisplay d, EGLSurface draw, EGLSurface read, EGLContext ctx) {
     (void)d; (void)draw; (void)read;
+    if (dm_headless()) { g_cur_ctx = ctx; return 1; }
     if (!ctx) { [NSOpenGLContext clearCurrentContext]; g_cur_ctx = NULL; return 1; }
     [(__bridge NSOpenGLContext *)ctx makeCurrentContext]; g_cur_ctx = ctx; return 1;
 }
@@ -60,6 +81,33 @@ HLE_FORCE("eglSwapBuffers", "GM：出图 → flushBuffer", EGLBoolean, h_egl_Swa
                 CGSize bk = g_glview ? [g_glview convertRectToBacking:b].size : NSZeroSize;
                 LOG("[glprobe] swap#%lld vp=%dx%d 均值 %u/12288 | view逻辑 %.0fx%.0f backing %.0fx%.0f",
                     swapno, vp[2], vp[3], sum, b.size.width, b.size.height, bk.width, bk.height);
+            }
+            {   // DM_SHOT_DIR + DM_SHOT_EVERY=<swap 数>：定期整帧落 PPM（窗口最小化/在别的 Space 时也能看画面）。
+                // GL 读出的行序底朝上，写文件时翻转；封顶 400 张防盘满。
+                // DM_SHOT_DIR + DM_SHOT_EVERY=<swap count>: periodically dump the full frame as PPM (works even when
+                // the window is miniaturized or on another Space). GL rows come out bottom-up, flip when writing; cap 400 shots.
+                static int shot_every, shot_init; static const char *shot_dir; static long long shot_cnt;
+                if (!shot_init) { shot_init = 1; shot_dir = getenv("DM_SHOT_DIR"); const char *e = getenv("DM_SHOT_EVERY"); shot_every = (e && shot_dir) ? atoi(e) : 0; }
+                if (shot_every > 0 && shot_cnt < 400 && swapno % (long long)shot_every == 0) {
+                    GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp);
+                    int w = vp[2], h = vp[3];
+                    if (w > 0 && h > 0 && w <= 4096 && h <= 4096) {
+                        unsigned char *px = malloc((size_t)w * h * 3);
+                        if (px) {
+                            glReadPixels(vp[0], vp[1], w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
+                            char p[512]; snprintf(p, sizeof p, "%s/s%08lld.ppm", shot_dir, swapno);
+                            FILE *f = fopen(p, "wb");
+                            if (f) {
+                                fprintf(f, "P6\n%d %d\n255\n", w, h);
+                                for (int y = h - 1; y >= 0; y--) fwrite(px + (size_t)y * w * 3, 1, (size_t)w * 3, f);
+                                fclose(f);
+                                shot_cnt++;
+                                if (shot_cnt == 1 || shot_cnt % 25 == 0) LOG("[shot] #%lld swap#%lld → %s", shot_cnt, swapno, p);
+                            }
+                            free(px);
+                        }
+                    }
+                }
             }
             glFlush(); [cur flushBuffer];
         }
@@ -108,11 +156,15 @@ static int32_t h_glShaderSource(uint32_t sh, int32_t n, const char **src, const 
     return 0;
 }
 
+
+
+
 void *hle_gl_sym(const char *name) {
     if (!strncmp(name, "egl", 3)) { void *p = dlsym(RTLD_DEFAULT, name); if (p && p != (void *)hle_gl_sym) { void *q = NULL;
         // 宿主 FORCE 表里的 egl 实现优先于系统（系统没有 egl，dlsym 找到的只会是我们自己的） | the host FORCE table wins for egl (the system has none)
         return p; } return NULL; }
     if (!strncmp(name, "gl", 2)) {
+        if (dm_headless()) return !strcmp(name, "glGetString") ? (void *)dm_gl_get_string : (void *)dm_gl_noop;
         if (!strcmp(name, "glShaderSource")) return (void *)h_glShaderSource;
         void *p = dlsym(RTLD_DEFAULT, name);
         if (!p) {
