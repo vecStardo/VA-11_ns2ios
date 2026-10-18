@@ -2240,3 +2240,61 @@ $ python3 tools/gml_decode.py gml_Script_day0control 8
 2. 对照我们运行期的失败现场（`input_text` 未设置），判断是 `demo` 未赋值、还是 `cur_client` 状态不对，
    导致走到了不带文本的分支；
 3. 这一步之后就能给出「是移植侧哪一处状态/初始化不对」的结论。
+
+## 实参顺序确定 + `textbox_create` 的真实入参（2026-10-19 14:4x）
+
+用已知签名反推了 GM 的压栈顺序：`ini_read_real` 处字节码是
+`push 0 ; push.str "st_pointer" ; pushloc st_pointer ; call ini_read_real argc=3`，
+对应 GML 的 `ini_read_real(section, key, default)` = `ini_read_real(st_pointer, "st_pointer", 0)`
+⇒ **最后压入的是 argument0**（压栈顺序与参数顺序相反）。
+
+据此 `day0control` 里 27 处调用实际是：
+
+```
+textbox_create(demo, N, 1)
+   → file_name = global.demo
+   → start_pointer = N
+   → textbox_skip_possible = 1
+```
+
+而 `gml_Script_textbox_create`（184 字节版）完整反汇编：
+
+```
+pop output_text
+if (failcheck()) {
+    temp_textbox = instance_create(64, 0, 0)
+    with (temp_textbox) {
+        file_name             = argument[0]
+        start_pointer         = argument[1]
+        textbox_skip_possible = argument[2]
+        event_user(0)                      ← 触发 obj_textbox 的 User Event 0 → textbox_loadbox
+    }
+}
+```
+
+`textbox_loadbox`（console 构建分支）：
+
+```
+temp_fname   = argument0
+temp_pointer = argument1
+curtext = ds_map_find_value(global.dialog_files_texts, temp_fname)
+ini_open_from_string(curtext)
+count = ini_read_real(st_pointer, string(temp_pointer), 0)
+while (i <= count-1) { line = ini_read_string(st_pointer, string(i), ""); ds_queue_enqueue(text_queue, line); i++ }
+ini_close()
+… 之后才把内容写进 input_text
+```
+
+⇒ 若 `global.demo` 是 undefined，则 `ds_map_find_value` 查不到 → `curtext` undefined →
+`ini_open_from_string(undefined)` 失败 → `count` 无效 → 循环不执行 → `input_text` 从未赋值 →
+正是我们观测到的报错。
+
+### 关键遗留问题
+`global.demo` 在字节码里**只有 74 次读（pushglb），没有任何写**，且这 74 次全在 `day0control` 内，
+全量扫描也没有任何脚本 push 字符串常量 `"demo"` —— 说明它是由**动态名字的全局赋值**
+（`variable_global_set` 拼字符串）或引擎/外部注入的。
+
+### 下一轮
+1. 扫全脚本里所有 `variable_global_set` 的**名字构造**（常见 `"demo"` 可能是 `"de" + xxx` 拼接），确认谁写它；
+2. 若确实没人写，则说明这个全局由**平台层**（Switch 的 "demo/试用版" 标志）提供 —— 那我们移植里要给它一个默认值，
+   这可能就是 day0 一直失败的最后一环。
