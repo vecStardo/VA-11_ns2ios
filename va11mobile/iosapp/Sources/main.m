@@ -387,6 +387,9 @@ static void step_schedule(void) {
                 tap_a_pulse_at(td.x, td.y);   // 点按与真实触屏同一路径，并带真实落点 | same path as a real touch, carrying the real hit point
             }
             else if (strcmp(op, "key") == 0) { uint64_t m = pad_mask_of(arg); if (m) { pad_press(m); usleep(120000); pad_release(m); } }
+            // kbd:<HID 键码>[,按住毫秒]：键盘注入（HID usage，40=Return、44=Space、82=Up、81=Down、80=Left、79=Right）
+            // kbd:<HID usage>[,hold ms]: keyboard injection (HID usage; 40=Return, 44=Space, 82=Up, 81=Down, 80=Left, 79=Right)
+            else if (strcmp(op, "kbd") == 0) { int code = 0, ms = 150; if (sscanf(arg, "%d,%d", &code, &ms) >= 1) { LOG("[test] 步:键盘 0x%02x 按住 %d ms", code, ms); dm_kbd_press(code, ms); } }
             else LOG("[test] 步:未知 %s", t);
         }
         LOG("[test] 单步脚本执行完毕");
