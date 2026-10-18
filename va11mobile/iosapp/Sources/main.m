@@ -354,16 +354,23 @@ static void tap_a_pulse_at(float nx, float ny) {
     // Six A pulses (120 ms down, 250 ms apart, ~2 s total): the title prompt blinks / has state windows, so a single pulse
     // is easy to miss; a short burst is robust.
     { extern void dm_click_request(float, float); dm_click_request(nx, ny); }   // 帧同步鼠标点击（菜单点选用真实落点）| frame-synced mouse click (real hit point for menu selection)
-    dm_kbd_press(0x28, 220);   // Enter（HID 0x28）：菜单/对话确认 | Enter (HID 0x28): menu/dialogue confirm
-    dm_kbd_press(0x2C, 220);   // Space（HID 0x2C）：推进对白 | Space (HID 0x2C): advance dialogue
-    for (int k = 0; k < 6; k++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.10 + 0.25 * k) * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            pad_press(DM_BTN_A);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                pad_release(DM_BTN_A);
+    // 先让鼠标点击把菜单选择挪到落点，再补 A/Enter/Space：VA-11 的主菜单在收到 A 的同一拍会确认
+    // **手柄当前选择位**（默认「读取」），所以补键必须等点击生效（实测提前补键会直接进读档页）。
+    // Let the mouse click move the menu selection to the hit point before pulsing A/Enter/Space: on the same tick as an A
+    // press VA-11's main menu confirms the controller's *current* selection (Load by default), so the pulses must wait for
+    // the click to take effect (measured: pulsing early jumps straight to the Load page).
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        dm_kbd_press(0x28, 220);   // Enter（HID 0x28）：菜单/对话确认 | Enter (HID 0x28): menu/dialogue confirm
+        dm_kbd_press(0x2C, 220);   // Space（HID 0x2C）：推进对白 | Space (HID 0x2C): advance dialogue
+        for (int k = 0; k < 6; k++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.10 + 0.25 * k) * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                pad_press(DM_BTN_A);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    pad_release(DM_BTN_A);
+                });
             });
-        });
-    }
+        }
+    });
 }
 
 // 诊断/验收：DM_TEST_STEP="at:<毫秒>;hover:x,y;wait:ms;click:x,y;tap;key:A;... "
@@ -410,6 +417,9 @@ static void step_schedule(void) {
             // stick:<lx>,<ly>[,ms]: push the left stick (+-32767), for testing stick-driven menus
             // wintap:x,y：走「窗口级兜底」同一条注入路径（模拟器里验证归一化/日志/注入）
             // wintap:x,y: goes through the same injection path as the window-level fallback (validates normalisation/log/injection in the simulator)
+            // mclick:x,y：只走鼠标（先 hover 定光标再帧同步点击），不推触点、不补 A —— 用来分离「鼠标坐标系」与「触点坐标系」
+            // mclick:x,y: mouse only (hover to place the cursor, then a frame-synced click); no touch state, no A pulse -- separates the mouse coordinate space from the touch one
+            else if (strcmp(op, "mclick") == 0) { float x = 0, y = 0; if (sscanf(arg, "%f,%f", &x, &y) == 2) { extern void dm_click_request(float, float); dm_mouse_hover(x, y); usleep(120000); dm_click_request(x, y); LOG("[test] 步:纯鼠标点击 (%.3f,%.3f)", x, y); } }
             else if (strcmp(op, "wintap") == 0) { float x = 0.5f, y = 0.5f; if (sscanf(arg, "%f,%f", &x, &y) == 2) { front_window_tap(x, y); } }
             else if (strcmp(op, "stick") == 0) { int lx = 0, ly = 0, ms = 400; if (sscanf(arg, "%d,%d,%d", &lx, &ly, &ms) >= 2) { extern void dm_pad_set(uint64_t, int32_t, int32_t, int32_t, int32_t); LOG("[test] 步:摇杆 (%d,%d) 保持 %d ms", lx, ly, ms); dm_pad_set(0, lx, ly, 0, 0); usleep((useconds_t)ms * 1000); dm_pad_set(0, 0, 0, 0, 0); } }
             else if (strcmp(op, "kbd") == 0) { int code = 0, ms = 150; if (sscanf(arg, "%d,%d", &code, &ms) >= 1) { LOG("[test] 步:键盘 0x%02x 按住 %d ms", code, ms); dm_kbd_press(code, ms); } }
