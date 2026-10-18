@@ -370,3 +370,36 @@ gamepad 常量），而不是命中区或键位本身。
    `GetTouchScreenStates` 返回值之后的转换代码（按返回结构偏移特征搜索），确认它期望的 attributes/边沿语义；
 2. 或换一个**已知能被该 runner 正常驱动**的 GameMaker Switch 游戏做对照（可验证是通用映射问题还是本作特例）；
 3. 真机侧：在真机上跑同一份 HLE 构建并对比（真机触屏可用），确认是否 iOS 前端特有（如视图旋转/坐标轴）。
+
+## runner 的 hid 导入清单（反汇编前的地基，2026-10-18 11:1x）
+
+`~/va11-work/exefs/*.bin` 是解压后的模块载荷（`.nso` 里各段是压缩的，直接 grep 原文件拿不到符号）。
+在 `main.bin`（GameMaker 官方 runner）里可以 grep 到它**导入的全部 46 个 nn::hid 符号**，输入相关的正是：
+
+```
+_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj        ← 5 种样式各一个
+_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj
+_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj
+_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj
+_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj
+_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi
+_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE
+_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi
+_ZN2nn3hid15GetNpadStyleSetERKj / _ZN2nn3hid24GetSupportedNpadStyleSetEv
+_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm / SetSupportedNpadStyleSet<…>
+_ZN2nn3hid29Set/GetNpadHandheldActivationMode…
+```
+
+**意义**：
+1. runner **同时导入四路输入**（手柄 5 样式 / 鼠标 / 键盘 / 触屏 16 点），说明翻译逻辑全在 runner 内部；
+   这与读侧统计（npad=touch=kbd≈25/s、mouse≈400/s）完全一致，HLE 侧确实没有缺接口；
+2. 触屏用的是 `GetTouchScreenStates<16>`（带 count 参数、返回已写条数），没有别的触屏入口；
+3. 由此确认下一步只能做**翻译层反汇编**：在 `main.bin` 里定位这些导入的 PLT 调用点，
+   看它在返回结构里读哪些偏移、如何生成 GML 的 `device_mouse_*` / `gamepad_*` / `keyboard_check` 结果。
+
+### 方法学修正
+之前用「两张截图 hash 是否相同」判断画面是否静止并据此推断输入生效，**不可靠**：
+标题本身有 glitch 动画，不同运行/不同时刻的 hash 都会不同；hover-only / key-only / click / idle
+四种输入在同一采样时刻得到过相同 hash（`1cbeeeb97f45`）也得到过不同 hash。
+→ 后续验收改为**内容分类**（例如对截图做一次视觉判定是「标题 / attract 演示 / 对话」）或
+直接读游戏内部状态，而不是比 hash。
