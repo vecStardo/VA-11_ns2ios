@@ -18,9 +18,25 @@
 #include <unistd.h>
 #include <math.h>
 
-enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1, RATE = 48000 };
+enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1 };
+// 设备输出采样率：缺省 48 kHz（Switch audout 缺省）；DM_AUDIO_RATE=44100 可改成 44.1 kHz 做实验——
+// 游戏素材是 44.1 kHz，如果它按输出率逐帧重采样且不带相位，48 kHz 下会每个游戏帧（800 样本）出现一次接缝爆音。
+// Device output rate: 48 kHz by default (Switch audout default); DM_AUDIO_RATE=44100 switches to 44.1 kHz for tests --
+// the game's assets are 44.1 kHz, and if it resamples per frame without carrying phase, 48 kHz yields a seam click
+// every game frame (800 samples).
+static int g_rate = 48000;
+#define RATE g_rate
 
-typedef struct { void *ptr; uint64_t cap, size; } gbuf;     // 写进客体 AudioOutBuffer 的前 24 字节 | The first 24 bytes written into the guest AudioOutBuffer
+// 客体 nn::audio::AudioOutBuffer 真实布局（Horizon ABI）：
+//   +0x00 next, +0x08 buffer(数据指针), +0x10 bufferSize(容量), +0x18 dataSize(有效字节), +0x20 tag
+// 之前的 {ptr,cap,size}@0/8/16 把数据指针写进了 next、把容量写进了 buffer，dataSize 永远是 0；
+// 若游戏自己改 dataSize（部分填充的块），追加时我们按“容量”播，就会把未填充的旧数据播出去 → 块边界爆音。
+// Real layout of the guest nn::audio::AudioOutBuffer (Horizon ABI):
+//   +0x00 next, +0x08 buffer (data pointer), +0x10 bufferSize (capacity), +0x18 dataSize (valid bytes), +0x20 tag
+// The old {ptr,cap,size}@0/8/16 wrote the data pointer into next and the capacity into buffer, leaving dataSize at 0;
+// if the game updates dataSize itself (partially filled blocks) we used to play the whole capacity, including stale
+// data, which crackles at block boundaries.
+typedef struct { void *next; void *ptr; uint64_t cap, size, tag; } gbuf;
 // 队列项在**追加时**就拷下 {客体指针, 数据指针, 长度}：FMOD 会复用 AudioOutBuffer 结构体，
 // 若只存客体指针、播放时才去读 b->ptr/b->size，结构体已被改成下一块 → 播出的内容错位/爆音。
 // Queue entries copy {guest pointer, data pointer, size} at append time: FMOD reuses the AudioOutBuffer
@@ -46,7 +62,9 @@ typedef struct {
     _Atomic uint64_t notify_ns;        // 最近一次「有缓冲释放、要通知」的时刻（量通知线程被叫醒的延迟） | Time of the most recent "buffer released, needs notifying" event (to measure the notification thread's wake-up latency)
     int dry;                           // 这次声卡回调里待播队列空了（在播放态）= 一次欠载（断音） | The pending playback queue was empty in this audio callback (while playing) = one underrun (audio dropout)
     _Atomic uint64_t st_append, st_bytes, st_dry, st_calls, st_peak, st_clip;  // 音频统计（诊断「爆音」用） | audio stats (for diagnosing distortion)
-    _Atomic uint64_t st_nsink;          // 静音接收端取数次数（与回调同时增长 = 两个消费者抢队列 → 爆音）
+    _Atomic uint64_t st_szu[8];          // 追加块大小直方图（字节/512 分档） | append size histogram (bytes/512)
+    _Atomic uint64_t st_rendered;        // 回调交付的帧数合计（应与 wall time×48000 一致；差 10 倍说明回调被高频调用）
+    _Atomic uint64_t st_zero_empty, st_zero_stopped, st_nsink;   // 补零字节数（空队列 / 未播放）——补零就是「不连续」的直接来源          // 静音接收端取数次数（与回调同时增长 = 两个消费者抢队列 → 爆音）
     _Atomic int st_run;                 // 统计线程运行标志 | stats thread run flag
     pthread_t st_th;                    // 统计线程（每个输出一个） | stats thread (one per output)
 } aout;
@@ -117,7 +135,11 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
     while (n) {
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
-        if (qh == qt || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) { if (qh == qt && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) a->dry = 1; memset(dst, 0, n); break; }
+        if (qh == qt || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) {
+            int started = atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED;
+            if (qh == qt && started) { a->dry = 1; atomic_fetch_add_explicit(&a->st_zero_empty, n, memory_order_relaxed); }
+            else atomic_fetch_add_explicit(&a->st_zero_stopped, n, memory_order_relaxed);
+            memset(dst, 0, n); break; }
         qent e = a->q[qh & (QMAX - 1)];
         uint64_t k = e.size - a->pos; if (k > n) k = n;
         memcpy(dst, e.ptr + a->pos, k);
@@ -193,6 +215,7 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
         while (left) { unsigned k = left < MIXMAX ? left : MIXMAX; pull(a, (uint8_t *)a->mixbuf, (uint64_t)k * 12); downmix51(a->mixbuf, o, k); o += 2 * k; left -= k; } }
     { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }
     atomic_fetch_add_explicit(&a->st_calls, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&a->st_rendered, bl->mBuffers[0].mDataByteSize / 4, memory_order_relaxed);
     if (a->dry) atomic_fetch_add_explicit(&a->st_dry, 1, memory_order_relaxed);   // 通知线程 QoS 对照：按当前相记 | Notification thread QoS comparison: recorded per current phase
     {   // 每个输出单独一个文件（<path>.<序号>）：两个 AudioOut 共用一个文件会把两路交错写在一起，无法判断听感
         static FILE *df; static int don = -1; static char dfn[1024];
@@ -257,9 +280,14 @@ static void *audio_stats(void *p) {
         uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
         if (ap != last_append || cl != last_calls) {
-            LOG("audio 统计 out=%p ch=%d：追加 %llu 块 / %.1f KiB，回调 %llu 次，静音端 %llu 次，欠载 %llu 次，峰值 %llu，满刻度 %llu，队列 %u",
-                (void *)a, a->ch, (unsigned long long)ap, (by - last_bytes) / 1024.0,
-                (unsigned long long)cl, (unsigned long long)atomic_load_explicit(&a->st_nsink, memory_order_relaxed), (unsigned long long)dr, (unsigned long long)pk,
+            LOG("audio 统计 out=%p ch=%d：块大小档 %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu，追加 %llu 块 / %.1f KiB，回调 %llu 次，静音端 %llu 次，欠载 %llu 次，补零(空/停) %llu/%llu B，交付帧 %llu，峰值 %llu，满刻度 %llu，队列 %u",
+                (void *)a, a->ch,
+                (unsigned long long)atomic_load_explicit(&a->st_szu[0],memory_order_relaxed),(unsigned long long)atomic_load_explicit(&a->st_szu[1],memory_order_relaxed),(unsigned long long)atomic_load_explicit(&a->st_szu[2],memory_order_relaxed),(unsigned long long)atomic_load_explicit(&a->st_szu[3],memory_order_relaxed),(unsigned long long)atomic_load_explicit(&a->st_szu[4],memory_order_relaxed),(unsigned long long)atomic_load_explicit(&a->st_szu[5],memory_order_relaxed),(unsigned long long)atomic_load_explicit(&a->st_szu[6],memory_order_relaxed),(unsigned long long)atomic_load_explicit(&a->st_szu[7],memory_order_relaxed),
+                (unsigned long long)ap, (by - last_bytes) / 1024.0,
+                (unsigned long long)cl, (unsigned long long)atomic_load_explicit(&a->st_nsink, memory_order_relaxed), (unsigned long long)dr,
+                (unsigned long long)atomic_load_explicit(&a->st_zero_empty, memory_order_relaxed),
+                (unsigned long long)atomic_load_explicit(&a->st_zero_stopped, memory_order_relaxed),
+                (unsigned long long)atomic_load_explicit(&a->st_rendered, memory_order_relaxed), (unsigned long long)pk,
                 (unsigned long long)atomic_load_explicit(&a->st_clip, memory_order_relaxed), qt - qh);
             last_append = ap; last_bytes = by; last_calls = cl; last_dry = dr;
         }
@@ -287,8 +315,10 @@ HLE_FORCE("_ZN2nn5audio13ListAudioOutsEPNS0_12AudioOutInfoEi", "音频输出设�
     if (n < 1) return 0;
     memset(info, 0, 256); strcpy(info, "DeviceOut"); return 1;
 }
+static void audio_rate_init(void) { static int done; if (done) return; done = 1; const char *e = getenv("DM_AUDIO_RATE"); if (e && atoi(e) > 0) g_rate = atoi(e); }
 HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKNS0_17AudioOutParameterE", "连 audout 服务；宿主 AudioUnit / 静音接收端",
           Result, h_au_Open, void *g, void *ev, const char *name, const uint8_t *param) {
+    audio_rate_init();
     int ch = *(const uint16_t *)(param + 4); int rate = *(const int32_t *)param;
     if (!ch) ch = 2;
     if (rate && rate != RATE) die("AudioOut 采样率 %d 不支持（只做 48 kHz）", rate);
@@ -350,7 +380,7 @@ HLE_FORCE("_ZN2nn5audio21GetAudioOutSampleRateEPKNS0_8AudioOutE", "采样率", i
 HLE_FORCE("_ZN2nn5audio23GetAudioOutChannelCountEPKNS0_8AudioOutE", "声道数", int, h_au_Ch, const void *g) { return ao(g)->ch; }
 HLE_FORCE("_ZN2nn5audio23GetAudioOutSampleFormatEPKNS0_8AudioOutE", "采样格式；只做 PCM16", int, h_au_Fmt, const void *g) { (void)ao(g); return FMT_PCM16; }
 
-HLE_FORCE("_ZN2nn5audio21SetAudioOutBufferInfoEPNS0_14AudioOutBufferEPvmm", "缓冲描述；写进客体结构体前 24 字节", void, h_au_SetBuf, gbuf *b, void *p, uint64_t cap, uint64_t size) {
+HLE_FORCE("_ZN2nn5audio21SetAudioOutBufferInfoEPNS0_14AudioOutBufferEPvmm", "缓冲描述；按真实布局写 buffer/bufferSize/dataSize", void, h_au_SetBuf, gbuf *b, void *p, uint64_t cap, uint64_t size) {
     b->ptr = p; b->cap = cap; b->size = size;
 }
 HLE_FORCE("_ZN2nn5audio28GetAudioOutBufferDataPointerEPKNS0_14AudioOutBufferE", "缓冲数据指针", void *, h_au_BufPtr, const gbuf *b) { return b->ptr; }
@@ -368,6 +398,7 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
         int16_t *pcm = (int16_t *)b->ptr; size_t n = (size_t)b->size / 2; int pk = 0;
         for (size_t i = 0; i < n; i++) { int v = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (v > pk) pk = v; }
         atomic_fetch_add_explicit(&a->st_append, 1, memory_order_relaxed);
+        { size_t bi = (size_t)b->size / 512; if (bi > 7) bi = 7; atomic_fetch_add_explicit(&a->st_szu[bi], 1, memory_order_relaxed); }
         atomic_fetch_add_explicit(&a->st_bytes, b->size, memory_order_relaxed);
         uint64_t old = atomic_load_explicit(&a->st_peak, memory_order_relaxed);
         while (pk > (int)old && !atomic_compare_exchange_weak_explicit(&a->st_peak, &old, (uint64_t)pk, memory_order_relaxed, memory_order_relaxed)) {}
