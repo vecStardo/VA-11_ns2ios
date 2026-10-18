@@ -1,9 +1,12 @@
-# VA-11 HALL-A · iOS 移植
+# VA-11 HALL-A · NS → iOS 移植（VA-11_ns2ios）
 
-把已购买的《VA-11 HALL-A》（Nintendo Switch 版，含中文补丁）跑在 iPhone / iPad 上，
+仓库：<https://github.com/vecStardo/VA-11_ns2ios>
+
+把已购买的《VA-11 HALL-A》（Nintendo Switch 版）跑在 iPhone / iPad 上，
 交付**无签名、可由自签工具安装的 `.ipa`**。
 
-本仓库**不包含任何游戏文件**：游戏程序与 `game.win` 需要你自己从正版游戏里准备（见下）。
+本仓库**不包含任何游戏文件**（`game.win` 即完整游戏数据包，约 520 MB）：游戏程序与 `game.win`
+需要你自己从正版游戏里准备（见下）。中文台词直接用本体 romfs 自带 `chn`，不需要外部汉化补丁。
 
 ```
 d2r-mobile/                 参考项目（Diablo II Resurrected 的 iOS 移植思路来源）
@@ -178,6 +181,9 @@ DM_PATCHED=~/va11-work/patched ./build.sh      # → out/Va11IOS-unsigned.ipa + 
 - 仓库里只有源码、工具、文档与 App 图标；密钥（`prod.keys` 等）与游戏文件均在 `.gitignore`。
 
 ## 合法使用声明
+
+发布边界（哪些东西只能在私下使用）：[`RELEASE.zh-CN.md`](../RELEASE.zh-CN.md)。
+
 
 - **必须拥有正版游戏**。本仓库不含任何游戏程序、数据或美术资源，也不提供下载地址。
 - 本项目仅用于在自己拥有的设备上运行自己购买的游戏（个人备份/移植研究）；请勿分发由游戏文件生成的内容。
