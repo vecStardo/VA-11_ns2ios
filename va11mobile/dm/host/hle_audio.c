@@ -402,7 +402,20 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);
     int ok = qt - qh < QMAX;
-    if (ok) { qent e = { b, (const uint8_t *)b->ptr, b->size }; a->q[qt & (QMAX - 1)] = e; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
+    uint64_t use = b->size;
+    {   // 声明 6400 字节但只有前半有声：后半整段为 0 时按前半大小播放
+        // The buffer is declared 6400 bytes but only the first half carries audio; when the second half is
+        // entirely zero, play only the first half.
+        if (b->size >= 4 && (b->size % 2) == 0) {
+            const int16_t *pcm = (const int16_t *)b->ptr; size_t half = (size_t)(b->size / 4);   // 半段样本数（stereo）
+            uint64_t pk1 = 0, pk2 = 0;
+            for (size_t i = 0; i < half; i++) { int v = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (v > pk1) pk1 = v; }
+            for (size_t i = half; i < half * 2; i++) { int v = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (v > pk2) pk2 = v; }
+            static _Atomic int halfmode; if (pk2 == 0 && pk1 > 0) { if (!atomic_exchange(&halfmode, 1)) LOG("audio：检测到后半段全 0，改按前半段大小播放"); }
+            if (atomic_load(&halfmode) && pk2 == 0) use = b->size / 2;
+        }
+    }
+    if (ok) { qent e = { b, (const uint8_t *)b->ptr, use }; a->q[qt & (QMAX - 1)] = e; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
     pthread_mutex_unlock(&a->m);
     return ok;      // bool：队列满时 false（真机同样有上限） | bool: false when the queue is full (the real device has a limit too)
 }

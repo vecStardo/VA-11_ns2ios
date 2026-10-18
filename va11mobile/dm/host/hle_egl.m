@@ -6,6 +6,7 @@
 // gl* all resolve via dlsym to the system GL; the nv driver entry points are no-ops (so the NVIDIA GL driver subsdk0 never runs).
 #include "hle_egl.h"
 #include "hle.h"
+#include <unistd.h>
 #include <dlfcn.h>
 #include <stdatomic.h>
 #import <Cocoa/Cocoa.h>
@@ -68,6 +69,12 @@ HLE_FORCE("eglMakeCurrent", "GM：绑定上下文", EGLBoolean, h_egl_MakeCurren
 }
 HLE_FORCE("eglSwapBuffers", "GM：出图 → flushBuffer", EGLBoolean, h_egl_SwapBuffers, EGLDisplay d, EGLSurface s) {
     (void)d; (void)s;
+        // DM_FRAME_CAP=<fps>：把出图节流到指定帧率（实验：GM 音频按帧混音，帧率决定音频产出速率）
+        // DM_FRAME_CAP=<fps>: throttle presentation to the given rate (experiment: GM mixes audio per frame, so the
+        // frame rate decides how much audio is produced).
+        { static int cap; static uint64_t next; if (!cap) { const char *e = getenv("DM_FRAME_CAP"); cap = e ? atoi(e) : -1; if (cap <= 0) cap = -1; }
+          if (cap > 0) { uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC); uint64_t step = 1000000000ull / (uint64_t)cap;
+              if (!next) next = now; if (now < next) usleep((useconds_t)((next - now) / 1000)); next += step; if (next < now) next = now; } }
         static long long swapno;   // DM_GLPROBE=1：第 1/100/600/1800 次上屏抓画面采样 | sample frames 1/100/600/1800
         swapno++;
         NSOpenGLContext *cur = [NSOpenGLContext currentContext];
