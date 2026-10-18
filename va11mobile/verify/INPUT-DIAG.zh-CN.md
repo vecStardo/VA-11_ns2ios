@@ -1321,3 +1321,25 @@ iOS 模拟器里做这种运行期插桩的反馈太慢（每轮 ~2 分钟，且
 
 步骤：`make -C va11mobile/dm/host dmhost_m3` → 用 `DM_ROMFS/DM_SAVE` 指向工作目录跑起来 →
 lldb 断点 `main+0x18090`（数组 helper）与 `main+0x2eb60`（show_message）→ 交互式检查。
+
+## 桌面宿主跑起来了！但停在 glGetError（缺 GL 上下文）（2026-10-18 20:0x）
+
+按上一轮计划在 Mac 上建了桌面宿主：
+
+```
+make -C va11mobile/dm/host dmhost_m3      # 构建成功，产出 ./dmhost_m3（2.19 MB）
+DM_HLE_TOLERANT=1 DM_SAVE=~/va11-work/run_mac/save DM_TEMP=... DM_ROMFS=... \
+  ./dmhost_m3 ~/va11-work/patched_obs main sdk subsdk0 subsdk1
+```
+
+注意事项与结果：
+- 首跑会 `FATAL 强制接管清单有误`：宿主清单里有 D2R 专属条目 → 加 **`DM_HLE_TOLERANT=1`** 放行（代码里已有这个开关）；
+- 放行后游戏能进入自己的初始化（`GR_D3D_Init()` 之后），但**在 `glGetError` 崩溃**（SIGSEGV addr=0x338）：
+  桌面宿主没有创建 GL 上下文（iOS 侧是 EAGL 视图，Mac 侧的 EGL→GL 垫片还没有对应的 CGL/NSOpenGL 实现）。
+
+### 下一轮
+1. 给桌面宿主补一个**离屏 GL 上下文**（CGL 或 NSOpenGL + FBO）供 `hle_egl*` 垫片使用，
+   让 dmhost_m3 能跑到主循环 —— 之后用 lldb 断在 `main+0x18090`（数组 helper）做交互式调试，
+   比模拟器加日志快一个数量级；
+2. 若补 GL 成本高，可先做「**无渲染调试模式**」：让 EGL 垫片返回假 context/dummy 函数指针，
+   只求跑到 day0 对话框（我们需要的只是 GML 逻辑，不需要画面）。
