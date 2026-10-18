@@ -1176,3 +1176,27 @@ tools/repro_day0.sh 80
    或 nsz 的 NCA 解析），再复现一次，看 runner 是否因此发出 `rom:` 请求 / 台词表是否被填上；
 2. 同时把 `host:/` 目录里放一份 `scripts/eng/1.2/`（文件名从 game.win 的文件表里已经能看到）做对照，
    观察是否出现新的 `fs open` 请求。
+
+## 重要排除：game.win 里没有 FILE（内嵌文件）块 → 台词不可能来自外部文件（2026-10-18 17:3x）
+
+按 GameMaker `FORM/GEN8` 结构把两份 game.win 的 chunk 表都走了一遍：
+
+| 原版（program.nca 内） | 汉化补丁 |
+|---|---|
+| OPTN LANG EXTN SOND AGRP SPRT BGND PATH SCPT GLOB SHDR FONT TMLN OBJT ROOM DAFL EMBI TPAG TGIN **CODE** VARI FUNC **STRG**(582200) TXTR AUDO | 同一套，`CODE` 1658952、`STRG` 582168（+16/-32 字节差异） |
+
+**两者都没有 `FILE` 块**（GameMaker 用来放「包含文件」的块）。
+
+结论：
+1. 游戏根本没有「内嵌台词文件」可读；`textbox_loadbox` 不可能靠 `file_text_read` 取台词 →
+   之前「缺台词文件 / 需要 romfs」的假设**彻底排除**；
+2. 汉化补丁只改了 `STRG`/`CODE` 等块（没加 FILE 块），所以**中文台词就在 STRG 里**，
+   这与我们直接看到的中英文 STRG 字符串一致；
+3. 因此 `textbox_loadbox` 里那个「未定义临时值」只能来自**游戏自身的全局数据/流程**，
+   即某一步初始化在我们这边没跑到（或跑早/跑晚），而不是文件读取失败。
+
+### 下一轮
+1. 在 `textbox_loadbox` 入口插观测门（先用「调用桩目标」定位它的地址：门回调里已经能拿到调用者附近代码，
+   下一步把桩里 `ldr x30,[x30]` 的目标地址也记下来）；
+2. 记录 `argument` 指针与 `argument_count`，确认它拿到几个实参、实参类型；
+3. 对照 `day0control` 的初始化顺序（它先给 `global.*` 赋值再创建 textbox），找出「本该赋值却 undefined」的那一个。
