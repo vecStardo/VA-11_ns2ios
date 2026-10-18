@@ -565,6 +565,26 @@ void dm_scan_value(uint64_t needle, uint64_t lo, uint64_t hi) {
     if (!hits) LOG("[va11] 没找到持有 %p 的槽", (void *)(uintptr_t)needle);
 }
 #endif
+// 采样 main 模块里两个「运行时全局状态」块（+0xafbf00 与 +0xb19600 附近），
+// 在「首次数组取值」和「失败点」各取一次，diff 出随调用变化的那几格 —— 目标是识别「值栈栈顶」指针。
+// Sample the two runtime global-state blocks in main (+0xafbf00, +0xb19600) once at the first indexed read and once at the
+// failure, then diff them to pick out the cells that move per call -- the goal is to identify the value-stack top pointer.
+static uint64_t g_blk_first[2][32]; static int g_blk_have;
+void dm_sample_block(int which, int store) {
+    module_t *m = module_of((const void *)g_mod[0].base);
+    (void)m;
+    uint64_t base = (uint64_t)(uintptr_t)g_mod[0].base;
+    uint64_t off = which ? 0xb195f0 : 0xafbef0;
+    uint8_t buf[0x100]; vm_size_t got = 0;
+    if (vm_read_overwrite(mach_task_self(), (vm_address_t)(base + off), sizeof buf, (vm_address_t)buf, &got) != KERN_SUCCESS) return;
+    uint64_t cur[32]; memcpy(cur, buf, sizeof cur);
+    if (!store) {
+        LOG("[va11] 全局块%d @ main+%#llx：", which, (unsigned long long)off);
+        for (int i = 0; i < 16; i++)
+            LOG("[va11]   [%02d] %#018llx%s", i, (unsigned long long)cur[i],
+                g_blk_have ? (cur[i] != g_blk_first[which][i] ? "  ← 变了" : "") : "");
+    } else if (!g_blk_have) memcpy(g_blk_first[which], cur, sizeof cur);
+}
 int dm_tls_redirect_all(uint64_t tlr) {
     { const char *e = getenv("DM_TLS_REDIRECT"); if (!e || !*e) return 0; }   // 实验开关：默认关闭 | experimental, off by default
     if (g_va11_tls_redirected) return 0;
@@ -728,7 +748,7 @@ static void va11_array_obs(const uint64_t *regs) {
     // evolution just before the crash is visible (normal array reads vs a sudden undefined value).
     { static struct { uint64_t src; int64_t idx; uint32_t tag; } ring[16]; static int rn, rpos;
       if (tag == 2) {
-          { static int first; if (!first++) { dm_log_tlr("首次取值");
+          { static int first; if (!first++) { void dm_sample_block(int,int); dm_sample_block(0,1); dm_sample_block(1,1); dm_log_tlr("首次取值");
 #if !TARGET_OS_IPHONE
               { extern uint64_t g_va11_tlr_current; void *tlr = pthread_getspecific(g_keytlr); int dm_tls_redirect_all(uint64_t);
                 if (tlr) dm_tls_redirect_all((uint64_t)(uintptr_t)tlr); }
@@ -752,6 +772,7 @@ static void va11_array_obs(const uint64_t *regs) {
       rn = 0; rpos = 0;
     }
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
+    { void dm_sample_block(int,int); g_blk_have = 1; dm_sample_block(0,0); dm_sample_block(1,0); }
     dm_log_tlr("失败时");
     { extern pthread_key_t g_keytlr; uint64_t tp = 0; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
       void *our = pthread_getspecific(g_keytlr);
