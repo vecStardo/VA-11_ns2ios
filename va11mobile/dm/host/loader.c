@@ -4,6 +4,8 @@
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
 static const struct mach_header_64 *image_mh(void);   // 前向声明：force_init 在定义之前用到（模拟器/设备两个分支都有定义） | forward declaration: force_init uses it before the definition (both simulator and device branches define it)
+#include <mach-o/dyld.h>
+
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -12,6 +14,32 @@ static const struct mach_header_64 *image_mh(void);   // 前向声明：force_in
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include "hle.h"
+#include <mach-o/dyld.h>
+#include <crt_externs.h>
+
+// 宿主映像头解析：优先找「含我们内嵌节/HLE 表的那个已加载映像」。
+// LiveContainer / 侧载器在宿主进程内加载 App 时，_NSGetMachExecuteHeader() 指向宿主 App 的 Mach-O，
+// 不是我们自己的映像，导致「内嵌段全缺失」的假故障（真机 LiveContainer 实测：四个 __DM*W 全缺、FATAL 退出）。
+// Host image resolution: prefer the loaded image that actually contains our embedded sections / HLE table.
+// When a sideloader (e.g. LiveContainer) loads the app inside its own process, _NSGetMachExecuteHeader() points at
+// the host app's Mach-O rather than ours, which made every embedded section look missing and the app died with FATAL.
+const struct mach_header_64 *dm_host_image(void) {
+    static const struct mach_header_64 *cached;
+    if (cached) return cached;
+    uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; i++) {
+        const struct mach_header *h = _dyld_get_image_header(i);
+        if (!h || h->magic != MH_MAGIC_64) continue;
+        unsigned long sz = 0;
+        if (getsectiondata(h, "__DATA", "swhle", &sz) && sz) { cached = (const struct mach_header_64 *)h; break; }
+        sz = 0; if (getsectiondata(h, "__DMmainW", "__img", &sz) && sz) { cached = (const struct mach_header_64 *)h; break; }
+        sz = 0; if (getsectiondata(h, "__DATA", "swforce", &sz) && sz) { cached = (const struct mach_header_64 *)h; break; }
+    }
+    if (!cached) cached = (const struct mach_header_64 *)_NSGetMachExecuteHeader();
+    if (cached) LOG("[boot] 宿主映像：%s", (cached == (const struct mach_header_64 *)_NSGetMachExecuteHeader()) ? "主可执行（_NSGetMachExecuteHeader）" : "按内嵌节定位（侧载器进程内加载）");
+    return cached;
+}
+
 
 module_t g_mod[MAX_MOD];
 int g_nmod;
@@ -327,7 +355,7 @@ static const struct mach_header_64 *image_mh(void) {
 // does not define _mh_execute_header (the Va11IOS simulator smoke must be able to load); on device both point at the same place.
 #include <mach-o/dyld.h>
 #include <crt_externs.h>
-static const struct mach_header_64 *image_mh(void) { return (const struct mach_header_64 *)_NSGetMachExecuteHeader(); }
+static const struct mach_header_64 *image_mh(void) { return dm_host_image(); }
 #define IMAGE_MH image_mh()
 #endif
 static void map_image(module_t *m, const char *dir) {
@@ -351,7 +379,7 @@ static void map_image(module_t *m, const char *dir) {
 // Desktop: the main executable's own image header (used by force_init to fetch __DATA,swforce).
 #include <mach-o/dyld.h>
 #include <crt_externs.h>
-static const struct mach_header_64 *image_mh(void) { return (const struct mach_header_64 *)_NSGetMachExecuteHeader(); }
+static const struct mach_header_64 *image_mh(void) { return dm_host_image(); }
 static uint8_t *slurp(const char *path, size_t *n) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) die("open %s", path);

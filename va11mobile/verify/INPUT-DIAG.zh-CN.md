@@ -528,3 +528,37 @@ game_y = portrait_x
 - 之后所有**菜单点位验收**都必须带 `DM_NO_TAP_A=1`，否则补 A 会污染结果（这条要写进验收脚本默认参数）；
 - 下一轮在 `DM_NO_TAP_A=1` 下重跑「点中心 → hover 菜单项 → 截图」，用 hover 高亮判定哪一格是「新游戏」，
   再点它；如果 hover 高亮不可见，就退回「逐个点位点击 + 每秒截图分类」。
+
+## 真机 LiveContainer 闪退修复：宿主映像头解析（2026-10-18 11:3x）
+
+用户真机（LiveContainer 环境）启动闪退，`Documents/boot.txt`：
+
+```
+[boot] 内嵌段 main: x0=0 W=0 x1=0 X 缺
+[boot] 内嵌段 sdk / subsdk0 / subsdk1 同样全缺
+[boot] SHELL-RED（载荷/游戏数据不全）
+[dm] FATAL 内嵌节 __dmmainx0 / __DMmainW / __dmmainx1 缺失
+```
+
+**根因**：LiveContainer 这类侧载器把 App **加载在它自己的进程里**，此时 `_NSGetMachExecuteHeader()`
+指向**宿主 App 的 Mach-O**，不是我们的映像 → 用主可执行头查 `__DM*W` 段自然全「缺失」，
+装载器 FATAL 退出（代码/载荷本身没问题）。
+
+**修复**：新增 `dm_host_image()`（`loader.c`）——遍历 `_dyld_image_count()` 的已加载映像，
+优先返回**含 `__DATA,swhle`（HLE 表）或 `__DMmainW,__img`（内嵌段）** 的那个映像；
+`loader.c` 的 `image_mh()`、`hle.c` 的 HLE 表查询、`main.m` 的载荷自检统一改用它。
+找不到才回退 `_NSGetMachExecuteHeader()`，并把选择结果打进日志。
+
+模拟器验证（正常主可执行环境）：
+
+```
+[dm] [boot] 宿主映像：主可执行（_NSGetMachExecuteHeader）
+[boot] 内嵌段 main: x0=2899968 W=11190272 x1=131072 OK
+... 四个模块全 OK → SHELL-OK → Entering main loop.
+```
+
+**新 ipa**（含该修复）已重打并放 iCloud：
+`Va11IOS-unsigned-20261018-1132-livecontainer.ipa`，17,021,666 B，sha256 前 24 位 `14a4d8acddffb0f4e20f5a14`，结构校验 0 项红。
+
+真机再试时若仍失败，请把新的 `boot.txt` 发我——第一行会打印「宿主映像：…」，
+可以直接看出解析到的是主可执行还是按内嵌节定位。

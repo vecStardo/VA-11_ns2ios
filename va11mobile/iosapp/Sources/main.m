@@ -234,7 +234,12 @@ static void boot_env(void) {
 // Payload self-check: are the four modules' embedded sections present (the loader checks again; this gives one readable line first).
 static void payload_check(void) {
     static const char *MODS[] = {"main", "sdk", "subsdk0", "subsdk1"};
-    const struct mach_header *mh = (const struct mach_header *)_NSGetMachExecuteHeader();
+    // 用与装载器一致的宿主映像解析：LiveContainer 等侧载器在宿主进程内加载时，
+    // _NSGetMachExecuteHeader 指向宿主 App，内嵌段会被误报全缺失。
+    // Use the same host-image resolution as the loader: a sideloader (LiveContainer) loads the app inside its own
+    // process, so _NSGetMachExecuteHeader points at the host app and every embedded section looked missing.
+    const struct mach_header_64 *dm_host_image(void);
+    const struct mach_header *mh = (const struct mach_header *)dm_host_image();
     int bad = 0;
     for (unsigned i = 0; i < sizeof MODS / sizeof MODS[0]; i++) {
         const char *m = MODS[i];

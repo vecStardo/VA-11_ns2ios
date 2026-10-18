@@ -29,7 +29,13 @@ static uint64_t g_cache[MAX_MOD][8192];
 
 uint64_t resolve_import(module_t *m, const char *name) {
     static const hle_ent *sec; static unsigned long secsz;
-    if (!sec) sec = (const hle_ent *)getsectiondata((const struct mach_header *)_NSGetMachExecuteHeader(), "__DATA", "swhle", &secsz);   // 模拟器链接无 _mh_execute_header | simulator link does not define it
+    if (!sec) {
+        // 用 dm_host_image()：侧载器（LiveContainer）在宿主进程内加载时，主可执行头不是我们自己的映像
+        // Use dm_host_image(): under a sideloader (LiveContainer) that loads the app inside its own process, the
+        // main-executable header is not our image.
+        const struct mach_header_64 *dm_host_image(void);
+        sec = (const hle_ent *)getsectiondata((const struct mach_header *)dm_host_image(), "__DATA", "swhle", &secsz);   // 模拟器链接无 _mh_execute_header | simulator link does not define it
+    }
     for (unsigned i = 0; i < secsz / sizeof(hle_ent); i++)
         if (!strcmp(sec[i].name, name)) {
             if (g_flag.imports) { Dl_info di; dladdr(sec[i].fn, &di); LOG("import %s -> %s", name, di.dli_sname); }
