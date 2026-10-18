@@ -46,6 +46,7 @@ typedef struct {
     _Atomic uint64_t notify_ns;        // 最近一次「有缓冲释放、要通知」的时刻（量通知线程被叫醒的延迟） | Time of the most recent "buffer released, needs notifying" event (to measure the notification thread's wake-up latency)
     int dry;                           // 这次声卡回调里待播队列空了（在播放态）= 一次欠载（断音） | The pending playback queue was empty in this audio callback (while playing) = one underrun (audio dropout)
     _Atomic uint64_t st_append, st_bytes, st_dry, st_calls, st_peak, st_clip;  // 音频统计（诊断「爆音」用） | audio stats (for diagnosing distortion)
+    _Atomic uint64_t st_nsink;          // 静音接收端取数次数（与回调同时增长 = 两个消费者抢队列 → 爆音）
     _Atomic int st_run;                 // 统计线程运行标志 | stats thread run flag
     pthread_t st_th;                    // 统计线程（每个输出一个） | stats thread (one per output)
 } aout;
@@ -256,9 +257,9 @@ static void *audio_stats(void *p) {
         uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
         if (ap != last_append || cl != last_calls) {
-            LOG("audio 统计 out=%p ch=%d：追加 %llu 块 / %.1f KiB，回调 %llu 次，欠载 %llu 次，峰值 %llu，满刻度 %llu，队列 %u",
+            LOG("audio 统计 out=%p ch=%d：追加 %llu 块 / %.1f KiB，回调 %llu 次，静音端 %llu 次，欠载 %llu 次，峰值 %llu，满刻度 %llu，队列 %u",
                 (void *)a, a->ch, (unsigned long long)ap, (by - last_bytes) / 1024.0,
-                (unsigned long long)cl, (unsigned long long)dr, (unsigned long long)pk,
+                (unsigned long long)cl, (unsigned long long)atomic_load_explicit(&a->st_nsink, memory_order_relaxed), (unsigned long long)dr, (unsigned long long)pk,
                 (unsigned long long)atomic_load_explicit(&a->st_clip, memory_order_relaxed), qt - qh);
             last_append = ap; last_bytes = by; last_calls = cl; last_dry = dr;
         }
@@ -272,6 +273,7 @@ static void *null_sink(void *p) {
     while (atomic_load_explicit(&a->null_run, memory_order_acquire)) {
         t += 5000000; uint64_t now = now_ns(); if (t > now) usleep((useconds_t)((t - now) / 1000));
         pull(a, scratch, bytes);
+        atomic_fetch_add_explicit(&a->st_nsink, 1, memory_order_relaxed);
     }
     return NULL;
 }
