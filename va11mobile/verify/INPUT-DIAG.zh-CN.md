@@ -649,3 +649,31 @@ game_y = portrait_x
 
 **不需要重出 ipa**：上一份 `-touchdiag`（`fa7a75e8…`）已含手势兜底与触点日志，本轮只是加了
 `wintap` 测试步（验收用）并验证兜底实现本身。
+
+## 真机触摸无反应：根因找到（抬手从不推送）（2026-10-18 12:3x）
+
+用户 boot 3.txt 证明**触摸确实到 App 了**：
+
+```
+[dm] [front] 触摸推 1 点 #0=(0.510,0.301) 视图=1280x720 第 1 次
+[dm] [front] 触摸推 1 点 #0=(0.510,0.301) 视图=1280x720 第 2 次
+...
+[dm] [hid-read] 每秒读取 npad=28 touch=28 mouse=0 kbd=28
+```
+
+关键观察：**日志里从来没有 `触摸推 0 点`**。原因在 `pushTouches`：
+
+```objc
+for (UITouch *t in touches) { if (n >= 16) break; all[n++] = t; }
+```
+
+抬手（touchesEnded）时 `event.allTouches` **仍然包含那根已经抬起的手指**，于是每次都推 n≥1：
+游戏侧永远看到「一根一直按着的手指」，后续点按都被视为「已经按着」，
+连「点按补 A」也不会触发（`n == 0 && g_was_down` 分支永远不成立）→ 真机触摸完全没反应。
+
+模拟器上一直用 `DM_TEST_STEP` 直接 `dm_touch_set(NULL,0)`，所以这个 bug 只在真手指路径暴露。
+
+**修复**：只收集 `phase != Ended/Cancelled` 的手指；抬手时 n 变 0，正常推送抬起并补 A/点击。
+另加一行 `[front] 点按抬手 → 补 A/点击 (x,y)` 日志，方便真机验证抬手链路。
+
+新 ipa：`Va11IOS-unsigned-20261018-1229-touchfix.ipa`（17,019,157 B，sha256 前 24 位 `fd7e87e6ad93743a2fdf1355`，0 项红）。

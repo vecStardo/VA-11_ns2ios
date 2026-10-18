@@ -141,8 +141,18 @@ static uint64_t pad_mask_of(const char *nm);   // 键名→掩码（DM_TEST_* �
 // The whole touch set is pushed whenever it changes: id = finger slot (lowest free slot on down, unchanged until up),
 // x/y = normalised coordinates on the picture (origin at top left).
 - (void)pushTouches:(NSSet<UITouch *> *)touches {
+    // 只收「还按着」的手指：event.allTouches 在抬手事件里仍然包含那根已结束的手指，
+    // 原来把所有 allTouches 都当按下推，导致**抬手永远不会被推成 n=0**——游戏看到一根一直按着的手指，
+    // 后续点按全部被当成「已经按着」，点按补 A 也不会触发（真机触摸没反应的真因）。
+    // Only collect fingers that are still down: on a lift event event.allTouches still contains the ended touch, so the
+    // old code always pushed n>=1 and the release (n=0) was never delivered -- the game saw one permanently held finger,
+    // every later tap looked like "already held", and the tap-to-A pulse never fired (the real cause of dead touch on device).
     UITouch *all[16]; int n = 0;
-    for (UITouch *t in touches) { if (n >= 16) break; all[n++] = t; }
+    for (UITouch *t in touches) {
+        if (n >= 16) break;
+        if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) continue;
+        all[n++] = t;
+    }
     // 稳定排序：按触摸对象地址排，保证同一组触点每次推送的槽号顺序一致（游戏按 id 跟踪手指）
     // Stable order: sort by the touch object's address so the same set always pushes slots in the same order (the game tracks fingers by id)
     for (int i = 1; i < n; i++) for (int j = i; j > 0 && (uintptr_t)all[j] < (uintptr_t)all[j - 1]; j--) { UITouch *x = all[j]; all[j] = all[j - 1]; all[j - 1] = x; }
@@ -166,7 +176,7 @@ static uint64_t pad_mask_of(const char *nm);   // 键名→掩码（DM_TEST_* �
     static int g_was_down; static float g_last_nx = 0.5f, g_last_ny = 0.5f;
     if (n > 0) { g_last_nx = ts[0].x; g_last_ny = ts[0].y; }
     if (n > 0 && !g_was_down) g_was_down = 1;
-    else if (n == 0 && g_was_down) { g_was_down = 0; tap_a_pulse_at(g_last_nx, g_last_ny); }   // 用真实落点补点击/A | pulse the click/A at the real hit point
+    else if (n == 0 && g_was_down) { g_was_down = 0; LOG("[front] 点按抬手 → 补 A/点击 (%.3f,%.3f)", g_last_nx, g_last_ny); tap_a_pulse_at(g_last_nx, g_last_ny); }   // 用真实落点补点击/A | pulse the click/A at the real hit point
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)touches; [self pushTouches:event.allTouches]; }
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)touches; [self pushTouches:event.allTouches]; }
