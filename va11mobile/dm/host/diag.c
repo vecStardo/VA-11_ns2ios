@@ -468,6 +468,54 @@ static uint32_t dm_rd32(const uint8_t *p) { uint32_t w; memcpy(&w, p, 4); return
 // In-place rewrite: `mrs Rt, tpidrro_el0` (0xD53BD060|Rt) -> `mrs Rt, tpidr_el0` (0xD53BD040|Rt). Premise: thread.c sets
 // TPIDR_EL0 to the emulated TLR on every guest thread (measured on macOS: msr tpidr_el0 is writable and does not trap).
 // The game's unrewritten code then reads our TLR too -- no trampoline, no scratch register, no +/-128MB range issue.
+#if !TARGET_OS_IPHONE
+// 在 guest 可写内存里搜某个 8 字节值（用来找「谁保存了这个值栈槽的指针」——很可能就是 GM 的参数栈指针全局）。
+// Search guest writable memory for an 8-byte value (to find who holds a value-stack slot pointer -- likely GM's argument
+// stack pointer global).
+void dm_scan_value(uint64_t needle, uint64_t lo, uint64_t hi) {
+    int hits = 0;
+    mach_vm_address_t a = lo;
+    while (a < hi && hits < 20) {
+        mach_vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_port_t obj = MACH_PORT_NULL;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_vm_address_t ra = a;
+        kern_return_t kr = mach_vm_region(mach_task_self(), &ra, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj);
+        if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+        if (kr != KERN_SUCCESS) break;
+        a = ra + sz;
+        if (!(info.protection & VM_PROT_WRITE) || sz > (512u << 20)) continue;
+        uint64_t step = 4u << 20;
+        for (mach_vm_address_t p = ra; p < ra + sz && hits < 20; p += step) {
+            size_t n = (size_t)((ra + sz - p) < step ? (ra + sz - p) : step);
+            uint8_t *buf = malloc(n); if (!buf) break;
+            vm_size_t got = 0;
+            if (vm_read_overwrite(mach_task_self(), p, n, (vm_address_t)buf, &got) == KERN_SUCCESS) {
+                for (size_t i = 0; i + 8 <= got; i += 8) {
+                    uint64_t v; memcpy(&v, buf + i, 8);
+                    if (v == needle) {
+                        LOG("[va11] 值 %p 的持有者：%p（相对所在页 +%#zx）", (void *)(uintptr_t)needle, (void *)(uintptr_t)(p + i), i);
+                        // 顺便把持有者前后 0x60 字节 dump 出来，看它处在什么结构里（实例变量 / 栈帧 / 全局槽）。
+                        // Also dump 0x60 bytes around the holder to see what structure it sits in.
+                        { uint64_t hb = (p + i) & ~(uint64_t)7, st = (hb >= 0x60) ? hb - 0x60 : hb;
+                          uint8_t hbuf[0xC0 + 8]; vm_size_t hg = 0;
+                          if (vm_read_overwrite(mach_task_self(), (vm_address_t)st, sizeof hbuf, (vm_address_t)hbuf, &hg) == KERN_SUCCESS) {
+                              for (int part = 0; part < 2; part++) {
+                                  char hh[3 * 0xC0 / 2 + 8]; size_t ho = 0;
+                                  for (int k = 0; k < 0xC0 / 2 && st + part * 0x60 + k < st + hg; k++)
+                                      ho += (size_t)snprintf(hh + ho, sizeof hh - ho, "%02x", hbuf[part * 0x60 + k]);
+                                  hh[ho] = 0;
+                                  LOG("[va11]   HOLDER%p+%#x %s", (void *)(uintptr_t)st, part * 0x60, hh);
+                              }
+                          } }
+                        if (++hits >= 20) break;
+                    }
+                }
+            }
+            free(buf);
+        }
+    }
+    if (!hits) LOG("[va11] 没找到持有 %p 的槽", (void *)(uintptr_t)needle);
+}
+#endif
 int dm_tls_redirect_all(uint64_t tlr) {
     { const char *e = getenv("DM_TLS_REDIRECT"); if (!e || !*e) return 0; }   // 实验开关：默认关闭 | experimental, off by default
     if (g_va11_tls_redirected) return 0;
@@ -803,6 +851,26 @@ static void va11_array_obs(const uint64_t *regs) {
           }
       }
       free(buf); }
+    // 把失败槽前后共 8 个 value（每个 0x10 字节：+0 双精度值/+8 标签与字符串指针）打出来，
+    // 用来看这批「参数/数组元素」到底长什么样（前面几个是 undefined、1.0 …）。
+    // Dump the 8 values around the failing slot (each 0x10 bytes: +0 double, +8 tag/string pointer) to see what this
+    // argument/array element batch actually looks like (undefined, 1.0, ...).
+    { uint8_t vsbuf[0x80]; vm_size_t vsg = 0;
+      if (vm_read_overwrite(mach_task_self(), (vm_address_t)(src - 0x20), sizeof vsbuf, (vm_address_t)vsbuf, &vsg) == KERN_SUCCESS && vsg == sizeof vsbuf) {
+        const uint8_t *vp = vsbuf;
+        for (int i = 0; i < 8; i++) {
+            double dv; uint64_t lo8, hi8; uint32_t tag;
+            memcpy(&dv, vp + i * 16, 8); memcpy(&lo8, vp + i * 16, 8);
+            memcpy(&hi8, vp + i * 16 + 8, 8); memcpy(&tag, vp + i * 16 + 0xc, 4);
+            LOG("[va11] 槽%+d @%p：值=%g 原始=%016llx %016llx 标签=%#x%s", i - 2,
+                (void *)(uintptr_t)(src - 0x20 + i * 16), dv,
+                (unsigned long long)lo8, (unsigned long long)hi8, tag & 0xffffffu,
+                (tag & 0xffffffu) == 0xffffffu ? "（未定义）" : "");
+        }
+      } }
+#if !TARGET_OS_IPHONE
+    { void dm_scan_value(uint64_t, uint64_t, uint64_t); dm_scan_value(src, 0x100000000ull, 0x4000000000ull); }
+#endif
     LOG("[va11] 非数组索引：源描述符 %p 标签=%u 下标=%lld 目标=%p 调用者=%p 描述符内容=%016llx %016llx %016llx",
         (void *)(uintptr_t)src, tag, (long long)(int64_t)(int32_t)idx,
         (void *)(uintptr_t)regs[0], (void *)(uintptr_t)regs[30],
