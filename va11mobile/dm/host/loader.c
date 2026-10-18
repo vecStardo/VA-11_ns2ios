@@ -430,19 +430,28 @@ static void map_image(module_t *m, const char *dir) {
 // outside #if TARGET_OS_IPHONE.
 int dm_in_show_message(void *fp0) {
 #ifdef DM_FOREIGN_GAME
+    // 诊断：把整个 fp 链（模块名+偏移）打出来，定位游戏脚本是在哪条调用链上触发 show_message 的。
+    // 只在「命中 show_message 链」那一次打印一行（最多 16 帧），避免刷屏。
+    // Diagnostic: dump the whole fp chain (module + offset) to see which call chain reaches show_message,
+    // printed once (max 16 frames) only when the show_message chain is hit.
+    int hit = 0, depth = 0; char line[512]; size_t used = 0;
     for (void *fp = fp0; fp; ) {
         void **f = (void **)fp;
         void *lr = f[1];
         if (lr) {
             module_t *m = module_of(lr);
-            if (m && !strcmp(m->name, "main")) {
+            if (m) {
                 uint64_t off = (uint64_t)((uint8_t *)lr - m->base);
-                if (off >= 0x2eb60 && off <= 0x2ebf0) return 1;
+                if (depth < 16 && used + 32 < sizeof line)
+                    used += (size_t)snprintf(line + used, sizeof line - used, "%s%s+%#llx", depth ? " <- " : "", m->name, (unsigned long long)off);
+                if (!strcmp(m->name, "main") && off >= 0x2eb60 && off <= 0x2ebf0) hit = 1;
+                depth++;
             }
         }
         fp = f[0];
         if ((uintptr_t)fp & 7) break;
     }
+    if (hit) { static int once; if (!once++) LOG("[va11] show_message 调用链：%s", line); return 1; }
 #endif
     return 0;
 }
