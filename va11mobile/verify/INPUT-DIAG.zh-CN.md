@@ -2466,3 +2466,15 @@ NCZ 也已解成本地 NCA（585 MB）。但 NCA 是加密的（header 用 heade
 1. 把 UTMT 补丁流程脚本化（无 UI：`UndertaleModCli replace`），产物随 App 一起分发；
 2. App 首次启动把内置的 `eng/**.ini` 复制到 `Documents/save/eng/`；
 3. 重出 IPA → 真机（LiveContainer）验证 → 收尾（中文版换 `chn/**.ini` 即可）。
+
+## 中文台词验证通过（2026-10-19 18:1x）
+
+在语言选择界面点「简体中文」后：
+
+- 日志：`fs open OK host:/chn/...` 共 **48 次**（含 `host:/chn/1.2/...` 8 次）→ 台词确实从 chn 目录加载；
+- ERROR=0；
+- 截图 `out/cn_day0b.png`：酒吧界面全中文（栏位 1/2、调酒、重做、读取、退出、设置、点唱机、冰、陈化），
+  底部对话框显示 `Anna: 嘘…`（对应英文 `Anna: Pssst.`）。
+
+⇒ **中英双语都跑通了**：App 已内置 `eng/chn/jp` 三套台词，首次启动自动解出，语言在游戏内的
+LANGUAGE SELECT 界面选择即可。

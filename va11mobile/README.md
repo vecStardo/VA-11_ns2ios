@@ -30,7 +30,10 @@ va11mobile/
 1. 把 **打过台词补丁的 `game.win`** 放进 App 数据目录的 `Documents/save/game.win`
    （补丁与现成产物见 `tools/romfs_patch/` 与 iCloud `Va11IOS-patched-data/`）；
 2. 把 `eng/` 整个目录放进 `Documents/save/eng/`（`romfs/scripts/eng` 的内容，zip 同上）；
-3. 启动 App → 点新游戏即可进入酒吧场景。
+3. 启动 App → 在 LANGUAGE SELECT 界面选 **English** 或 **简体中文** → 点新游戏即可进入酒吧场景。
+
+> 语言：App 已内置 `eng / chn / jp` 三套台词文件（首次启动自动解到 `Documents/save/<lang>/`），
+> 中英日都能直接选；截图见 `out/day0_fixed.png`（英文）与 `out/cn_day0b.png`（中文）。
 
 > 说明：原版数据 + 原版逻辑也能启动，但会卡在 day0（台词表加载不到，`textbox_loadbox` 崩溃）。
 > 上面第 1、2 步就是绕过这条移植缺口的正式修法，细节见 `tools/romfs_patch/README.zh-CN.md`。
