@@ -5,6 +5,8 @@
 #include "dm.h"
 static const struct mach_header_64 *image_mh(void);   // 前向声明：force_init 在定义之前用到（模拟器/设备两个分支都有定义） | forward declaration: force_init uses it before the definition (both simulator and device branches define it)
 #include <mach-o/dyld.h>
+#include <setjmp.h>
+#include <signal.h>
 
 #include <TargetConditionals.h>
 #include <fcntl.h>
@@ -428,6 +430,32 @@ static void map_image(module_t *m, const char *dir) {
 // implementation. Hit = dialog chain (main+0xd476d8 is RET-patched; let GML continue); miss = a real
 // assertion, for the caller to exit on. Platform-independent (both map_image paths need it), so it lives
 // outside #if TARGET_OS_IPHONE.
+
+// 宿主侧安全读：用 sigsetjmp + 临时 SIGSEGV/SIGBUS 处理器把「读非法地址」变成一次长跳，
+// 避免调试插桩自己把进程打崩（mach_vm_region 在 iOS 模拟器 SDK 里不可用）。
+// Host-side safe read: sigsetjmp plus temporary SIGSEGV/SIGBUS handlers turn a bad dereference into a longjmp, so the
+// probe itself cannot crash the process (mach_vm_region is unavailable in the iOS simulator SDK).
+static _Thread_local sigjmp_buf dm_rd_jb;
+static _Thread_local int dm_rd_armed;
+static void dm_rd_fault(int sig) { (void)sig; if (dm_rd_armed) siglongjmp(dm_rd_jb, 1); _exit(139); }
+int dm_host_readable(const void *addr, size_t len) {
+    if (!addr || len == 0 || len > 64) return 0;
+    struct sigaction sa, old_segv, old_bus;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = dm_rd_fault; sigemptyset(&sa.sa_mask); sa.sa_flags = SA_NODEFER;
+    sigaction(SIGSEGV, &sa, &old_segv); sigaction(SIGBUS, &sa, &old_bus);
+    int ok = 1;
+    if (sigsetjmp(dm_rd_jb, 1) == 0) {
+        dm_rd_armed = 1;
+        volatile uint8_t sink = 0;
+        for (size_t i = 0; i < len; i++) sink ^= ((const uint8_t *)addr)[i];
+        (void)sink;
+    } else ok = 0;
+    dm_rd_armed = 0;
+    sigaction(SIGSEGV, &old_segv, NULL); sigaction(SIGBUS, &old_bus, NULL);
+    return ok;
+}
+
 int dm_in_show_message(void *fp0) {
 #ifdef DM_FOREIGN_GAME
     // 诊断：把整个 fp 链（模块名+偏移）打出来，定位游戏脚本是在哪条调用链上触发 show_message 的。
@@ -451,7 +479,65 @@ int dm_in_show_message(void *fp0) {
         fp = f[0];
         if ((uintptr_t)fp & 7) break;
     }
-    if (hit) { static int once; if (!once++) LOG("[va11] show_message 调用链：%s", line); return 1; }
+    if (hit) {
+        static int once;
+        if (!once++) {
+            LOG("[va11] show_message 调用链：%s", line);
+            // 找数组检查函数（main+0x1809c）那一帧：它的返回点落在 0x1809c..0x18300 之间，
+            // 沿这条帧的栈窗口扫「像 GML 值描述符的指针」，读 [p+0xc]&0xffffff 的类型标签（2=数组）。
+            // 报错时标签必然不是 2，打出来就能知道 textbox_loadbox 索引的是什么。
+            // Find the array-check frame (main+0x1809c): its return address lies in 0x1809c..0x18300. Scan that frame's
+            // stack window for pointers that look like GML value descriptors and read the type tag at [p+0xc]&0xffffff
+            // (2 = array). At the error the tag is never 2, so printing it names the variable.
+            void *fpw = fp0;
+            for (int d = 0; fpw && d < 16; d++) {
+                void **f = (void **)fpw;
+                void *lr = f[1];
+                module_t *m = lr ? module_of(lr) : NULL;
+                if (m && !strcmp(m->name, "main")) {
+                    uint64_t off = (uint64_t)((uint8_t *)lr - m->base);
+                    if (off >= 0x1809c && off < 0x18300) {
+                        int shown = 0;
+                        for (int k = -0x80; k < 0x100 && shown < 6; k += 8) {
+                            uint64_t *slot = (uint64_t *)((uint8_t *)fpw + k);
+                            if (!dm_host_readable(slot, 8)) continue;
+                            uint64_t v = *slot;
+                            if (v < 0x100000000ull || (v & 7) || v > 0x800000000000ull) continue;
+                            uint32_t tagw;
+                            if (!dm_host_readable((void *)(uintptr_t)(v + 0xc), 4)) continue;
+                            memcpy(&tagw, (void *)(uintptr_t)(v + 0xc), 4);
+                            uint32_t tag = tagw & 0xffffffu;
+                            if (tag == 2) continue;   // 数组不吃惊 | arrays are fine
+                            {
+                                uint64_t w0 = 0, w1 = 0, w2 = 0, w3 = 0;
+                                if (dm_host_readable((void *)(uintptr_t)v, 0x20)) {
+                                    memcpy(&w0, (void *)(uintptr_t)v, 8); memcpy(&w1, (void *)(uintptr_t)(v + 8), 8);
+                                    memcpy(&w2, (void *)(uintptr_t)(v + 0x10), 8); memcpy(&w3, (void *)(uintptr_t)(v + 0x18), 8);
+                                }
+                                char txt[48] = {0};
+                                for (int wi = 0; wi < 2; wi++) {
+                                    uint64_t cand = wi ? w2 : w0;
+                                    if (cand < 0x100000000ull || cand > 0x800000000000ull) continue;
+                                    if (!dm_host_readable((void *)(uintptr_t)cand, 8)) continue;
+                                    const char *cs = (const char *)(uintptr_t)cand;
+                                    int n = 0; for (; n < (int)sizeof txt - 1 && dm_host_readable(cs + n, 1) && cs[n] >= 0x20 && cs[n] < 0x7f; n++) txt[n] = cs[n];
+                                    txt[n] = 0; if (n >= 3) break;
+                                }
+                                LOG("[va11] 数组检查帧 槽%+d 描述符 %p 标签=%u 内容=%016llx %016llx %016llx %016llx 文本=\"%s\"",
+                                    k, (void *)(uintptr_t)v, tag,
+                                    (unsigned long long)w0, (unsigned long long)w1, (unsigned long long)w2, (unsigned long long)w3, txt);
+                            }
+                            shown++;
+                        }
+                        break;
+                    }
+                }
+                fpw = f[0];
+                if ((uintptr_t)fpw & 7) break;
+            }
+        }
+        return 1;
+    }
 #endif
     return 0;
 }
