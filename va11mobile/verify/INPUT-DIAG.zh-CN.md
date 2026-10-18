@@ -2147,3 +2147,62 @@ gml_Script_textbox_create  条目 0xaea51c len=164  locals=2 args=0  → 字节�
 这类以 `0xA0` 开头的字，形态像是 `{u8 标志, u24 值}`，与 libgm 的 `read_variable`（读一个 u32 后查 occurrence 表）不同，
 说明这个版本把「实例类型 + 变量 id」压进了同一个字。下一轮把它解出来，就能正确念出 `textbox_create` 的
 `with` 块里每条赋值的变量名。
+
+## 解码器终于能读出真实变量名，并解出关键逻辑链（2026-10-19 13:1x）
+
+关键机关：**字节码里「变量引用」后面那 4 字节并不是变量 id，而是「下一个出现位置的偏移」**
+（release 版把调试用的出现链留在了指令里）。真正的变量身份要靠 **VARI 里的出现位置表**反查。
+把 VARI 的 2892 条变量的出现链全部展开成 `位置 → 变量名` 映射（36627 条）后，解码器立刻能读出真实名字。
+
+### `gml_Script_textbox_create`（164 字节）
+
+```
+instance_create(64, 0, <obj>)   → pop temp_textbox
+with (temp_textbox) {
+    file_name             = argument[0]
+    start_pointer         = argument[1]
+    textbox_skip_possible = argument[2]
+    ...
+}
+```
+
+### `gml_Script_textbox_loadbox`
+
+```
+temp_fname   = argument0
+temp_pointer = argument1
+...
+curtext = ds_map_find_value(global.dialog_files_texts, temp_fname)
+...
+count = string_split(...) 之类
+while (i <= count-1) { line = ...; line = string_replace(...); text_queue_enqueue(...); }
+input_text = ...        ← 唯一一处写入
+```
+
+### 全局 `dialog_files_texts` 是谁填的
+
+它的 4 次出现：
+
+| 位置 | 操作 | 脚本 |
+|---|---|---|
+| 0x9a9590 | 读 | `gml_Script_textbox_loadbox` |
+| 0xa3e67c | **写** | **`gml_Object_async_init_Create_0`** |
+| 0xa3e734 | 读 | `gml_Object_async_init_Destroy_0` |
+| 0xa3ea3c | 读 | `gml_Object_async_init_Other_72` |
+
+而 `async_init` 的 Create 事件解出来是一长串
+`call func=44 argc=3`（形态 = `ds_map_add(map, key, value)`）——**用 STRG 里的字符串常量把这个 map 填满**，
+**不依赖任何文件读取**。
+
+### 结论（逻辑链完全闭合）
+1. `textbox_create(file_name, start_pointer, skip)` 把 `argument[0..2]` 写进实例；
+2. `loadbox` 用 `argument0`（=file_name）去 `dialog_files_texts` 里查文本；
+3. 若 `textbox_create` 拿到的是 **0 个实参** → `file_name` 是 undefined → map 查不到 → `curtext` undefined
+   → `count` 为 0 / 循环里的 `input_text` 从未被赋值 → 读到未设置 → 就是我们从 28 轮前追到现在的那个错。
+
+⇒ **根因回到「textbox_create 被以 0 个实参调用」**，但这次是**从游戏源码逻辑推出来的**，不是猜的。
+
+### 下一轮
+1. 找 `textbox_create` 的调用点（`day0control`/`dialog_control` 一带），确认它传入的 `file_name` 是 STRG 常量还是全局变量；
+2. 若传的是常量，则说明是**实参在调用边界丢失**（我们的移植问题），回到宿主/改写器层面查；
+3. 若传的是全局（例如 `global.current_script`），则查那个全局为何是 undefined。
