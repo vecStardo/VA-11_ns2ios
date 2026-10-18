@@ -463,6 +463,47 @@ static void va11_array_obs(const uint64_t *regs) {
     // 不在我们的模块表中，所以这里只打原始地址；下一次复现时按差值定位到具体 GML 调用点。
     // Caller return address (the gate block hands x30 over as regs[30]): GML compiled code is loaded from game.win by
     // the runner and is not in our module table, so the raw address is logged; a later run can locate the call site.
+    // 调用点附近的代码 dump（caller-0x40 ~ caller+8）：GML 编译代码在 game.win 载入区，离线用 capstone 反汇编即可
+    // 看它是从哪个 global 槽把「源值」取出来的（紧邻 bl 的那条 ldr 就是变量槽）。
+    // Code dump around the call site (caller-0x40 .. caller+8): GML compiled code lives in the region the runner loads
+    // from game.win; disassembling it offline shows which global slot the source value came from (the ldr next to the bl).
+    { uintptr_t ca = (uintptr_t)regs[30]; char hx[3 * 0x50 + 1]; size_t o = 0;
+      uint8_t buf[0x48]; vm_size_t got = 0;
+      if (ca > 0x40) {
+          kern_return_t kr = vm_read_overwrite(mach_task_self(), (vm_address_t)(ca - 0x40), 0x48, (vm_address_t)buf, &got);
+          if (kr == KERN_SUCCESS && got == 0x48) {
+              for (size_t i = 0; i < got && o + 3 < sizeof hx; i++) o += (size_t)snprintf(hx + o, sizeof hx - o, "%02x", buf[i]);
+              hx[o] = 0;
+              LOG("[va11] 调用点代码 dump（基址 %p）: %s", (void *)(ca - 0x40), hx);
+          } else {
+              LOG("[va11] 调用点代码 dump 失败：kr=%d got=%lu（地址 %p）", (int)kr, (unsigned long)got, (void *)(ca - 0x40));
+          }
+      } }
+    // GML 侧调用链：x29(fp) 链上逐帧打返回地址（GML 代码不在我们的模块表里，打原始地址即可）。
+    // fp 链上的返回地址就是一层层 GML 编译函数；紧邻的两帧决定了 x1（源值）是从哪个槽取的。
+    // GML-side call chain: walk the fp chain and print return addresses (GML code is not in our module table, so raw
+    // addresses are fine). The two nearest frames decide which slot the source value (x1) came from.
+    { uint64_t fp = regs[29]; char cl[256]; size_t u = 0;
+      for (int d = 0; fp && d < 8; d++) {
+          uint64_t lr = 0, nfp = 0;
+          if (!dm_host_readable((const void *)(uintptr_t)fp, 16)) break;
+          memcpy(&nfp, (const void *)(uintptr_t)fp, 8);
+          memcpy(&lr, (const void *)(uintptr_t)(fp + 8), 8);
+          if (lr && u + 24 < sizeof cl) u += (size_t)snprintf(cl + u, sizeof cl - u, "%s%p", d ? " <- " : "", (void *)(uintptr_t)lr);
+          if (lr && d < 4) {
+              // 帧 0 是真正调用 helper 的 GML 函数（textbox_loadbox），dump 更长一段好把「x25 从哪来的」看全。
+              // Frame 0 is the GML function that calls the helper (textbox_loadbox); a longer dump shows where x25 came from.
+              size_t len = (d == 0) ? 0x300 : 0x40;
+              uint8_t fb[0x300]; vm_size_t fg = 0; char fh[3 * 0x300 + 1]; size_t fo = 0;
+              if (vm_read_overwrite(mach_task_self(), (vm_address_t)(lr - len), len, (vm_address_t)fb, &fg) == KERN_SUCCESS && fg == len) {
+                  for (size_t i = 0; i < fg && fo + 3 < sizeof fh; i++) fo += (size_t)snprintf(fh + fo, sizeof fh - fo, "%02x", fb[i]);
+                  fh[fo] = 0;
+                  LOG("[va11] 帧%d 代码（基址 %p 长 %#zx）: %s", d, (void *)(uintptr_t)(lr - len), len, fh);
+              }
+          }
+          fp = nfp; if (fp & 7) break;
+      }
+      cl[u] = 0; LOG("[va11] GML 调用链：%s", cl); }
     LOG("[va11] 非数组索引：源描述符 %p 标签=%u 下标=%lld 目标=%p 调用者=%p 描述符内容=%016llx %016llx %016llx",
         (void *)(uintptr_t)src, tag, (long long)(int64_t)(int32_t)idx,
         (void *)(uintptr_t)regs[0], (void *)(uintptr_t)regs[30],
