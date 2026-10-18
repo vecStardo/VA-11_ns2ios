@@ -151,7 +151,16 @@ CUTS = {'db0507f36b84200ac05f75d76ed5026f': [
 # 原指令须与位置无关（不得 PC 相对 / 分支 / 涉 x18·tpidr），离线断言；宿主未挂回调时门块进出一次即返回 ----
 # ---- Registered observation gates: {NSO build ID: [(offset, number, original instruction word, reason)]}. Numbers match OBS_* in the host's hle.h;
 # the original instruction must be position independent (no PC-relative / branch / anything involving x18 or tpidr), asserted offline; when the host has no callback attached the gate block goes in and out once and returns ----
-OBS = {'db0507f36b84200ac05f75d76ed5026f': [
+OBS = {'32d80c9afc27e2efebaa048b1e6a120c': [
+    # VA-11 诊断：GML「按下标取值」运行时 helper 入口（x0=目标值, x1=源值描述符, x2=下标, w2==0x80000000 表示 undefined
+    # 下标；源描述符 [x1+0xc]&0xffffff：2=数组、1=字符串、0=undefined…）。命中「源不是数组」时宿主打一行，
+    # 用来定位 textbox_loadbox 到底索引了哪个变量。原指令 stp x29, x30, [sp, #0x30]。
+    # VA-11 diagnostic: entry of the GML "index a value" runtime helper (x0 = destination value, x1 = source value
+    # descriptor, x2 = index; w2 == 0x80000000 means an undefined index; tag = [x1+0xc]&0xffffff, 2 = array).
+    # The host logs when the source is not an array, naming the variable textbox_loadbox indexes.
+    (0x18090, 9, 'f81c0ff7', 'VA-11: GML array-index runtime helper entry (x0 = dest value, x1 = source value descriptor, x2 = index); host logs non-array sources; original str x23, [sp, #-0x40]!'),
+],
+'db0507f36b84200ac05f75d76ed5026f': [
     (0xb1dc60, 1, 'd10603ff', 'UI 消息总线虚函数实现入口（x1 = 消息 {u64 类型哈希, u64 动作哈希, char* 面板名, …}）：'
      'DM_UIMSG 消息流与 DM_BOOTPROF 启动分段的唯一来源；原指令 sub sp, sp, #0x180'),
     (0x5d3bc0, 2, 'd10503ff', '服务端拍入口（x0 = 游戏对象 G）：DM_TICKS 逐拍 6 格状态哈希（dm/verify/tick_state_format.md，与真值 swtick.py 同一采集点）；'
@@ -181,16 +190,19 @@ if os.environ.get('DM_FOREIGN_GAME') and NAME == 'main':
     # VA-11: boot reads save:/preselected_user (missing file -> NULL) and the caller strncmps it without a null check.
     # Cut this one strncmp call and pin the result to "not equal" (= no preselected user); the host's
     # account::OpenPreselectedUser take-over answers instead.
+    # 这条「x19 ← "False"」剪口只在 DM_VA11_PRESELECT_STR=1 时启用：它的预期原字节与本仓库
+    # 现在的 exefs/main 不一致（历史产物只做过下面 0xc68 的剪口），默认关掉以保持产物和已发版一致。
+    # This "x19 <- "False"" cut is opt-in via DM_VA11_PRESELECT_STR=1: its expected original bytes do not match the
+    # exefs/main in this tree (the shipped product only ever had the 0xc68 cut below), so it is off by default to keep
+    # build output identical to the released one.
     w54 = struct.unpack_from('<I', IMG, 0xc54)[0]
-    assert (w54 >> 26) == 0x25, '0xc54 不是 bl'
-    # x19 ← rodata "False"（adrp+add 两步），strncmp 调用固定返回「不等于」：preselected_user 视为 False，
-    # 且后续对 x19 的使用拿到非空串。
-    # x19 <- rodata "False" (adrp+add); the strncmp call is pinned to "not equal": preselected_user reads as False,
-    # and later uses of x19 get a non-null string.
-    _adrp = lambda dd, pc, target: 0x90000000 | ((((target & ~0xFFF) - (pc & ~0xFFF)) >> 12) & 3) << 29 | ((((target & ~0xFFF) - (pc & ~0xFFF)) >> 14) & 0x7FFFF) << 5 | dd
-    cuts.append((0xc54, struct.pack('<I', w54).hex(),
-                 struct.pack('<I', _adrp(19, 0xc54, 0x335632)).hex() + struct.pack('<I', 0x91000000 | (0x632 << 10) | (19 << 5) | 19).hex(),
-                 'VA-11: boot reads save:/preselected_user (missing -> NULL) and dereferences it; pin x19 to the rodata string "False"'))
+    if os.environ.get('DM_VA11_PRESELECT_STR') == '1' and (w54 >> 26) == 0x25:
+        # x19 ← rodata "False"（adrp+add 两步），strncmp 调用固定返回「不等于」：preselected_user 视为 False，
+        # 且后续对 x19 的使用拿到非空串。
+        _adrp = lambda dd, pc, target: 0x90000000 | ((((target & ~0xFFF) - (pc & ~0xFFF)) >> 12) & 3) << 29 | ((((target & ~0xFFF) - (pc & ~0xFFF)) >> 14) & 0x7FFFF) << 5 | dd
+        cuts.append((0xc54, struct.pack('<I', w54).hex(),
+                     struct.pack('<I', _adrp(19, 0xc54, 0x335632)).hex() + struct.pack('<I', 0x91000000 | (0x632 << 10) | (19 << 5) | 19).hex(),
+                     'VA-11: boot reads save:/preselected_user (missing -> NULL) and dereferences it; pin x19 to the rodata string "False"'))
     w68 = struct.unpack_from('<I', IMG, 0xc68)[0]
     assert (w68 >> 26) == 0x25, '0xc68 不是 bl'
     cuts.append((0xc68, struct.pack('<I', w68).hex(), struct.pack('<I', 0x52800020).hex(), 'VA-11: boot strncmp(x19,"True") -> pin w0=1 (no preselected user)'))

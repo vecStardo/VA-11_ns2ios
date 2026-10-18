@@ -437,9 +437,42 @@ static void setlang_obs(const uint64_t *regs) {
     static uint32_t last = 0xffffffff; if (idx != last) { last = idx; LOG("SetLanguage：语言 %s（号 %u），重装字符串表", nm ? nm : "?", idx); }
     if (nm) atomic_store(&g_dm_lang, (int)idx);   // 我们自己的 UIKit 文字跟着换（dm_i18n.c） | our own UIKit text switches along with it (dm_i18n.c)
 }
+// VA-11：GML「按下标取值」helper 入口观测（OBS_ARRAY，改写器离线插在 main+0x18090）。
+// 只在「源不是数组」时打一行：x0=目标值、x1=源值描述符（[x1+0xc]&0xffffff 是类型标签，2=数组）、x2=下标。
+// VA-11: observation at the GML "index a value" helper entry (OBS_ARRAY, inserted offline at main+0x18090).
+// Logs only when the source is not an array: x0 = destination value, x1 = source descriptor ([x1+0xc]&0xffffff is the
+// type tag, 2 = array), x2 = index.
+int dm_host_readable(const void *addr, size_t len);
+static void va11_array_obs(const uint64_t *regs) {
+    uint64_t src = regs[1], idx = regs[2];
+    if (!src) return;
+    uint32_t tagw = 0;
+    if (!dm_host_readable((const void *)(uintptr_t)(src + 0xc), 4)) return;
+    memcpy(&tagw, (const void *)(uintptr_t)(src + 0xc), 4);
+    uint32_t tag = tagw & 0xffffffu;
+    if (tag == 2) return;                       // 源是数组：正常路径 | source is an array: normal path
+    if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
+    static int n; if (n++ > 40) return;
+    uint64_t w0 = 0, w1 = 0, w2 = 0;
+    if (dm_host_readable((const void *)(uintptr_t)src, 0x18)) {
+        memcpy(&w0, (const void *)(uintptr_t)src, 8);
+        memcpy(&w1, (const void *)(uintptr_t)(src + 8), 8);
+        memcpy(&w2, (const void *)(uintptr_t)(src + 0x10), 8);
+    }
+    // 调用者返回地址（门块把 x30 一起交进来，regs[30]）：GML 编译代码在 game.win 里被 runner 载入，
+    // 不在我们的模块表中，所以这里只打原始地址；下一次复现时按差值定位到具体 GML 调用点。
+    // Caller return address (the gate block hands x30 over as regs[30]): GML compiled code is loaded from game.win by
+    // the runner and is not in our module table, so the raw address is logged; a later run can locate the call site.
+    LOG("[va11] 非数组索引：源描述符 %p 标签=%u 下标=%lld 目标=%p 调用者=%p 描述符内容=%016llx %016llx %016llx",
+        (void *)(uintptr_t)src, tag, (long long)(int64_t)(int32_t)idx,
+        (void *)(uintptr_t)regs[0], (void *)(uintptr_t)regs[30],
+        (unsigned long long)w0, (unsigned long long)w1, (unsigned long long)w2);
+}
+
 void probe_install(void) {
     if (gate_obs_present(OBS_SETLANG)) gate_obs_set(OBS_SETLANG, setlang_obs);
     if (gate_obs_present(OBS_EVENT_MSG)) gate_obs_set(OBS_EVENT_MSG, event_msg_obs);
+    if (gate_obs_present(OBS_ARRAY)) { gate_obs_set(OBS_ARRAY, va11_array_obs); LOG("VA-11：数组索引观测门已挂（OBS_ARRAY）"); }
     { void dm_ui_tooltip_obs(const uint64_t *regs); if (gate_obs_present(OBS_TOOLTIP)) gate_obs_set(OBS_TOOLTIP, dm_ui_tooltip_obs); }   // 说明框停靠（dm_cursor.c） | tooltip docking (dm_cursor.c)
     const char *ui = getenv("DM_UIMSG");
     if (ui && strcmp(ui, "1") && !(g_uifp = fopen(ui, "w"))) die("DM_UIMSG 打不开 %s", ui);
