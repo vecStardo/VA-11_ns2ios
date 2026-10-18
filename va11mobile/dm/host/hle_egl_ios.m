@@ -15,6 +15,7 @@
 #include "hle.h"
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#include <stdatomic.h>
 #import <OpenGLES/EAGL.h>
 #import <OpenGLES/EAGLDrawable.h>
 #import <OpenGLES/ES2/gl.h>
@@ -117,8 +118,22 @@ HLE_FORCE("eglMakeCurrent", "VA-11 iOS：绑定上下文（并首次建 FBO）",
     g_real_bind_fb ? g_real_bind_fb(GL_FRAMEBUFFER, g_fbo) : glBindFramebuffer(GL_FRAMEBUFFER, g_fbo);
     return 1;
 }
+// 渲染帧率统计：每 5 秒记一行（判「游戏跑太快/太慢」导致音频节奏异常）
+// Render FPS stats: one line every 5 s (to tell whether the game runs too fast/slow and wrecks audio pacing).
+static _Atomic uint64_t g_swap_frames;
+static void *fps_thread(void *p) {
+    (void)p; uint64_t last = 0;
+    for (;;) {
+        sleep(5);
+        uint64_t n = atomic_load_explicit(&g_swap_frames, memory_order_relaxed);
+        LOG("渲染统计：swap %llu 次 / 5 s（≈%.1f FPS）", (unsigned long long)(n - last), (double)(n - last) / 5.0);
+        last = n;
+    }
+    return NULL;
+}
 HLE_FORCE("eglSwapBuffers", "VA-11 iOS：出图 → presentRenderbuffer", EGLBoolean, h_egl_SwapBuffers, EGLDisplay d, EGLSurface s) {
     (void)d; (void)s;
+    { static int started; if (!started) { started = 1; pthread_t t; pthread_create(&t, NULL, fps_thread, NULL); } atomic_fetch_add_explicit(&g_swap_frames, 1, memory_order_relaxed); }
     if (!g_ctx || !ensure_target()) return 0;
     [EAGLContext setCurrentContext:g_ctx];
     glBindRenderbuffer(GL_RENDERBUFFER, g_rbo);

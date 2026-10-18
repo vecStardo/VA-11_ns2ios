@@ -21,6 +21,12 @@
 enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1, RATE = 48000 };
 
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;     // 写进客体 AudioOutBuffer 的前 24 字节 | The first 24 bytes written into the guest AudioOutBuffer
+// 队列项在**追加时**就拷下 {客体指针, 数据指针, 长度}：FMOD 会复用 AudioOutBuffer 结构体，
+// 若只存客体指针、播放时才去读 b->ptr/b->size，结构体已被改成下一块 → 播出的内容错位/爆音。
+// Queue entries copy {guest pointer, data pointer, size} at append time: FMOD reuses the AudioOutBuffer
+// structures, so keeping only the guest pointer and reading b->ptr/b->size at play time would read the next
+// block's fields and play wrong/glitched audio.
+typedef struct { void *g; const uint8_t *ptr; uint64_t size; } qent;
 #define QMAX 64
 #define RELMAX QMAX                    // 已释放最多 = 在途缓冲数（游戏收回缓冲才能再追加），与待播同上限 | Released max = number of in-flight buffers (the game must take a buffer back before it can append again), same limit as pending
 typedef struct {
@@ -28,8 +34,8 @@ typedef struct {
     void *event;                       // 客体 SystemEvent：有缓冲被释放就触发 | Guest SystemEvent: signaled whenever a buffer is released
     int ch;
     _Atomic int state;
-    gbuf *q[QMAX]; _Atomic uint32_t q_head, q_tail;       // 待播：游戏侧写，出声端读 | Pending: written by the game side, read by the output side
-    gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // 已释放：出声端写，游戏侧读 | Released: written by the output side, read by the game side
+    qent q[QMAX]; _Atomic uint32_t q_head, q_tail;       // 待播：游戏侧写，出声端读 | Pending: written by the game side, read by the output side
+    qent rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // 已释放：出声端写，游戏侧读 | Released: written by the output side, read by the game side
     uint64_t pos;                      // 当前块已播字节 | Bytes already played of the current block
     AudioUnit au;
     int mix;                           // 1 = 游戏给 5.1（6 声道），交给 CoreAudio 前我们自己下混成双声道（au_render） | 1 = the game gives 5.1 (6 channels), downmixed to stereo by us before handing to CoreAudio (au_render)
@@ -111,20 +117,20 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
     while (n) {
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
         if (qh == qt || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) { if (qh == qt && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) a->dry = 1; memset(dst, 0, n); break; }
-        gbuf *b = a->q[qh & (QMAX - 1)];
-        uint64_t k = b->size - a->pos; if (k > n) k = n;
-        memcpy(dst, (uint8_t *)b->ptr + a->pos, k);
+        qent e = a->q[qh & (QMAX - 1)];
+        uint64_t k = e.size - a->pos; if (k > n) k = n;
+        memcpy(dst, e.ptr + a->pos, k);
         {   // 满刻度样本计数：真机若「爆」，先看是不是数据就削顶了 | count full-scale samples: if the device "crackles", check whether the data already clips
-            const int16_t *pcm = (const int16_t *)((const uint8_t *)b->ptr + a->pos); size_t ns = (size_t)k / 2; uint64_t c = 0;
+            const int16_t *pcm = (const int16_t *)(e.ptr + a->pos); size_t ns = (size_t)k / 2; uint64_t c = 0;
             for (size_t i = 0; i < ns; i++) if (pcm[i] >= 32767 || pcm[i] <= -32767) c++;
             if (c) atomic_fetch_add_explicit(&a->st_clip, c, memory_order_relaxed);
         }
         dst += k; n -= k; a->pos += k;
-        if (a->pos >= b->size) {
+        if (a->pos >= e.size) {
             uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
             uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
             if (rw - rr == RELMAX) die("AudioOut 已释放队列溢出");
-            a->rel[rw & (RELMAX - 1)] = b;
+            a->rel[rw & (RELMAX - 1)] = e;
             atomic_store_explicit(&a->rel_tail, rw + 1, memory_order_release);
             qh++;
             atomic_store_explicit(&a->q_head, qh, memory_order_release);
@@ -164,11 +170,6 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
                 LOG("audio 回调布局：buffer[%u] bytes=%u data=%p", i, (unsigned)bl->mBuffers[i].mDataByteSize, bl->mBuffers[i].mData);
         }
     }
-    {   // 每个输出单独一个文件（<path>.<序号>）：两个 AudioOut 共用一个文件会把两路交错写在一起，无法判断听感
-        static FILE *df; static int don = -1; static char dfn[1024];
-        if (don < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); don = e != NULL;
-            if (don) { snprintf(dfn, sizeof dfn, "%s.%d", e, (int)(atomic_fetch_add_explicit(&g_dump_seq, 1, memory_order_relaxed))); if (!(df = fopen(dfn, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", dfn); else LOG("audio dump → %s", dfn); } }
-      if (df) fwrite(bl->mBuffers[0].mData, 1, bl->mBuffers[0].mDataByteSize, df); }
     {   // 自检音：DM_AUDIO_TESTTONE=1 → 440 Hz 正弦（用来把「数据/格式问题」与「设备/会话问题」分开）
         static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_TESTTONE"); on = e && atoi(e); }
         if (on) {
@@ -183,6 +184,7 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
             return noErr;
         }
     }
+
     atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed);
     a->dry = 0;
     if (!a->mix) pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
@@ -191,6 +193,11 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
     { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }
     atomic_fetch_add_explicit(&a->st_calls, 1, memory_order_relaxed);
     if (a->dry) atomic_fetch_add_explicit(&a->st_dry, 1, memory_order_relaxed);   // 通知线程 QoS 对照：按当前相记 | Notification thread QoS comparison: recorded per current phase
+    {   // 每个输出单独一个文件（<path>.<序号>）：两个 AudioOut 共用一个文件会把两路交错写在一起，无法判断听感
+        static FILE *df; static int don = -1; static char dfn[1024];
+        if (don < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); don = e != NULL;
+            if (don) { snprintf(dfn, sizeof dfn, "%s.%d", e, (int)(atomic_fetch_add_explicit(&g_dump_seq, 1, memory_order_relaxed))); if (!(df = fopen(dfn, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", dfn); else LOG("audio dump → %s", dfn); } }
+      if (df) fwrite(bl->mBuffers[0].mData, 1, bl->mBuffers[0].mDataByteSize, df); }
     return noErr;
 }
 #if !TARGET_OS_IPHONE
@@ -367,7 +374,7 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);
     int ok = qt - qh < QMAX;
-    if (ok) { a->q[qt & (QMAX - 1)] = b; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
+    if (ok) { qent e = { b, (const uint8_t *)b->ptr, b->size }; a->q[qt & (QMAX - 1)] = e; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
     pthread_mutex_unlock(&a->m);
     return ok;      // bool：队列满时 false（真机同样有上限） | bool: false when the queue is full (the real device has a limit too)
 }
@@ -376,7 +383,7 @@ HLE_FORCE("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", "取已播�
     pthread_mutex_lock(&a->m);
     uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_relaxed);
     uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_acquire);
-    if (rr != rw) { b = a->rel[rr & (RELMAX - 1)]; atomic_store_explicit(&a->rel_head, rr + 1, memory_order_release); }
+    if (rr != rw) { b = (gbuf *)a->rel[rr & (RELMAX - 1)].g; atomic_store_explicit(&a->rel_head, rr + 1, memory_order_release); }
     pthread_mutex_unlock(&a->m);
     return b;
 }
