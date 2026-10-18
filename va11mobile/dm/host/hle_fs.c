@@ -556,7 +556,11 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     // Diagnostic: always log failures; on success also log paths that look like scripts/text/romfs (to tell whether the day0
     // dialogue box creation reads external dialogue files at all).
     if (fd < 0) { LOG("fs open 失败 %s mode=%d → %s (errno=%d)", path, mode, hp, errno); return err_res("open", hp); }
-    if (strstr(path, "script") || strstr(path, ".txt") || strstr(path, "rom") || strstr(path, "romfs")) { struct stat sst; if (!fstat(fd, &sst)) LOG("fs open OK %s mode=%d size=%lld", path, mode, (long long)sst.st_size); }
+    // 验收诊断（默认开，最多 3000 行）：把游戏打开过的每个文件都记下来——用来确认 day0 对话框创建时
+    // 到底有没有去读台词文件、读的是哪个路径。
+    // Acceptance diagnostic (on by default, capped at 3000 lines): log every file the game opens, to see whether the day0
+    // dialogue box creation reads a script file at all and under which path.
+    { static _Atomic int n_open; if (atomic_fetch_add(&n_open, 1) < 3000) { struct stat sst; off_t sz = fstat(fd, &sst) ? -1 : sst.st_size; LOG("fs open OK %s mode=%d size=%lld", path, mode, (long long)sz); } }
     struct stat st; fstat(fd, &st);
     if (S_ISDIR(st.st_mode)) { close(fd); return RES_PATH_NOT_FOUND; }
     if (fd >= (int)sizeof g_fmode) die("fd 超出表");
