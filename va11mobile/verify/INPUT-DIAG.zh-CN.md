@@ -2346,3 +2346,77 @@ ini_close()
 1. 确认 `async_init` 对象是否被创建并运行（房间 `room == 10` 的判断是关键）；
 2. 若我们的启动流程跳过了初始化房间，那就是**移植侧启动顺序问题**——对齐后 day0 的台词加载才会发生；
 3. 同时继续等用户的 romfs/存档素材，用来核对台词文件到底在不在 romfs 里。
+
+## UTMT 反编译结果（用户提供）：台词是 romfs 里的 .ini 文件（2026-10-19 16:2x）
+
+用户在另一会话用 UndertaleModTool 完整 dump 了 GML（`out/utmt/gml_all/CodeEntries/`，3518 个脚本），
+UTMT 信息：**GMS2、非 YYC、bytecode 17、3518 code entries、7345 variables、15185 strings**。
+
+关键代码（原文）：
+
+**`gml_Object_async_init_Create_0`**
+```gml
+var lang_val = ds_map_find_value(lango_map, global.language);   // "en" → "eng"
+var txt_ext;
+if (os_type == os_switch || os_type == os_ps4) txt_ext = ".ini";
+else { txt_ext = ".txt"; lang_val = "scripts/" + lang_val; }
+global.anna = lang_val + "/1.2/anna" + txt_ext;      // 例：eng/1.2/anna.ini
+global.pro1 = lang_val + "/1.2/pro1" + txt_ext;
+…
+global.dialog_files = ds_list_create();
+ds_list_add(global.dialog_files, global.testscript, global.demo, …);
+global.dialog_files_number = ds_list_size(global.dialog_files);
+global.dialog_files_texts = ds_map_create();
+```
+
+**`gml_Object_async_init_Step_0`**
+```gml
+if (os_type == os_switch || os_type == os_ps4) {
+    if (cur_ind == global.dialog_files_number || loading) exit;
+    loadbuff = buffer_create(1, buffer_grow, 1);
+    buffer_async_group_begin("scripts");
+    buffer_load_async(loadbuff, ds_list_find_value(global.dialog_files, cur_ind), 0, -1);
+    loadid = buffer_async_group_end();
+    loading = 1;
+}
+```
+
+**`gml_Object_async_init_Other_72`**
+```gml
+if (os_type == os_switch || os_type == os_ps4) {
+    var ident = ds_map_find_value(async_load, "id");
+    if (ident == loadid && loading) {
+        var curtext = buffer_read(loadbuff, buffer_string);
+        ds_map_set(global.dialog_files_texts, ds_list_find_value(global.dialog_files, cur_ind), curtext);
+        loading = 0; buffer_delete(loadbuff); cur_ind += 1;
+    }
+}
+```
+
+**`gml_Script_textbox_loadbox`**（console 分支，原文）
+```gml
+var temp_fname = argument0;
+if (global.consoles_flag) {
+    var curtext = ds_map_find_value(global.dialog_files_texts, temp_fname);
+    ini_open_from_string(curtext);
+    var count = ini_read_real(st_pointer, "count", 0);
+    for (i = 1; i < count + 1; i++) {
+        var line = ini_read_string(st_pointer, "l_" + string(i), "");
+        …
+        ds_queue_enqueue(text_queue, line);
+    }
+    ini_close();
+}
+```
+
+### 结论
+- **Switch 版台词来自 romfs 里的 `eng/1.2/*.ini`、`eng/anna_script.ini` 等文件**（`os_type == os_switch` 时扩展名 `.ini`）；
+- 我们端口没有这些文件，`buffer_load_async` 加载失败 → `dialog_files_texts` 为空 →
+  `textbox_loadbox` 的 `curtext` 是 undefined → `input_text` 永不赋值 → day0 报错/黑屏；
+- 已确认 NSP 里存在这些内容：NCA 中搜到 `anna_script.ini`（0x217a7e54）、`eng/1.2`（0x1008bca）；
+  并且已把 NSP 解包出 `game/*.nca` + `*.tik`（封面 key 齐），下一步只差 **NCA → romfs 文件树** 的解析。
+
+### 下一轮
+1. 用 nsz 的 Nca/Ticket 模块解开 NCA（header key + 票里的 title key），导出 romfs；
+2. 把 `eng/**.ini` 放进端口的 romfs 目录（`DM_ROMFS`），再跑 day0 验证；
+3. 若成功，day0 黑屏应当消失——这也是整个移植最后一块拼图（换中文只需换 `chn/**.ini`）。
