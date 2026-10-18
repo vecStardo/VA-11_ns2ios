@@ -120,3 +120,30 @@ EAGL/GLES 2.0 (the GM runner's native path), the module images are embedded as s
 asset is a single `game.win` instead of RomFS. Known limits: verified on the iOS 26.3 simulator only; the touch UI still
 needs complete dialogue/mixing walkthroughs; GLES is used because it is the runner's native API. Usage requires an owned
 copy of the game; nothing derived from game files may be redistributed.
+
+---
+
+## 当前可用状态与安装说明（2026-10-18）
+
+### 已验证可用（真机 + 模拟器）
+- 真机 **LiveContainer** 侧载可启动：宿主映像按内嵌节定位、四段载荷 OK、进入主循环；
+- **触摸已修好**（抬手推送缺失是真机「点不动」的根因），可点标题、点菜单、进「新游戏」；
+- 画面输出（EAGL 1280x720）、中文/英文文本渲染、手柄/键盘输入、存档事务提交均正常；
+- **原版英文数据**可完整走：标题 → 开场旁白 → 酒吧内景旁白，0 条 GameMaker 报错。
+
+### 已知问题
+- **汉化补丁（标称支持 1.0.1）跑在本体 1.2.3.0 上会在 `obj_textbox` / `gml_Script_textbox_loadbox` 报
+  「trying to index a variable which is not an array」→ 黑屏**。这不是移植问题（原版数据同环境 0 报错）。
+  想要中文：需要匹配 1.2.3.0 的补丁，或改用 1.0.1/1.0.0 的本体。
+
+### 安装步骤（自签 / LiveContainer 均可）
+1. 用自签工具安装 `Va11IOS-unsigned-*.ipa`（bundle id `local.va11.mobile`，最低 iOS 16.0）；
+2. 把 **`game.win`** 放进 App 的 `Documents/save/`（App 已开 `UIFileSharingEnabled`，可在「文件」App 里拖进去）：
+   - 原版英文：`Va11IOS-data-EN/game.win`（sha256 `e860d56e…`）
+   - 汉化补丁：`Va11IOS-data-CN/game.win`（sha256 `ff5220e0…`，**当前版本不兼容，会黑屏**）
+3. 启动即可；日志会写入 `Documents/boot.txt`（排障时把这个文件发回来即可）。
+
+### 触摸操作
+- 点任意处 = 鼠标点击 + 补 A/Enter（游戏标题「轻触或按 A 键开始」、对话推进都用这条路径）；
+- 主菜单默认选中「读取」，要开始新游戏请点**左侧「新游戏」**；
+- 若外接手柄/键盘：A 确认、B 返回、方向键移动、Enter/Space 推进对白。
