@@ -567,6 +567,37 @@ static void va11_array_obs(const uint64_t *regs) {
       void *our = pthread_getspecific(g_keytlr);
       LOG("[va11] TPIDRRO_EL0=%p（宿主 pthread 的） vs 我们的 TLR=%p%s", (void *)(uintptr_t)tp, our, tp == (uint64_t)(uintptr_t)our ? "（相同）" : "（**不同**：未改写的代码读的是宿主 TLS）"); }
     dm_array_fail_hook();                       // 调试器断点处（lldb: breakpoint set -n dm_array_fail_hook）
+    // 定位并 dump「构造实参」的那个运行时函数：caller-0x30c 处是一条 bl（我们上一轮从 dump 里读到的），
+    // 解码它的 imm26 得到目标地址，再把目标函数前 0x300 字节 dump 出来，离线反汇编看它到底是干什么的。
+    // Locate and dump the runtime function that builds the argument: caller-0x30c holds a bl (found in the earlier dump);
+    // decode its imm26 to get the target and dump the first 0x300 bytes of that function for offline disassembly.
+    { // 先把 caller 前 0x400 字节按 4 行 hex 打出来，离线找最近的 bl（不同运行里调用点可能不同）。
+      uint8_t wb[0x400]; vm_size_t wg = 0;
+      if (vm_read_overwrite(mach_task_self(), (vm_address_t)(regs[30] - 0x400), sizeof wb, (vm_address_t)wb, &wg) == KERN_SUCCESS && wg == sizeof wb) {
+          for (int part = 0; part < 4; part++) {
+              char wh[3 * 0x100 + 1]; size_t wo = 0;
+              for (int i = 0; i < 0x100; i++) wo += (size_t)snprintf(wh + wo, sizeof wh - wo, "%02x", wb[part * 0x100 + i]);
+              wh[wo] = 0;
+              LOG("[va11] CALLER-0x%03x %p %s", 0x400 - part * 0x100, (void *)(uintptr_t)(regs[30] - 0x400 + part * 0x100), wh);
+          }
+      } }
+    { uint64_t bl_site = regs[30] - 0x30c, w = 0;
+      if (dm_host_readable((const void *)(uintptr_t)bl_site, 4)) {
+          memcpy(&w, (const void *)(uintptr_t)bl_site, 4);
+          if ((w >> 26) == 0x25) {
+              int64_t imm = (int64_t)(w & 0x3FFFFFF);
+              if (imm & 0x2000000) imm -= 0x4000000;
+              uint64_t target = bl_site + imm * 4;
+              LOG("[va11] 构造实参的函数：bl@%p → 目标 %p（与 caller 相差 -%#llx）", (void *)(uintptr_t)bl_site, (void *)(uintptr_t)target, (unsigned long long)(regs[30] - target));
+              uint8_t cb[0x300]; vm_size_t cg = 0;
+              if (vm_read_overwrite(mach_task_self(), (vm_address_t)target, sizeof cb, (vm_address_t)cb, &cg) == KERN_SUCCESS && cg == sizeof cb) {
+                  char hx[3 * 0x300 + 1]; size_t o = 0;
+                  for (size_t i = 0; i < cg && o + 3 < sizeof hx; i++) o += (size_t)snprintf(hx + o, sizeof hx - o, "%02x", cb[i]);
+                  hx[o] = 0;
+                  LOG("[va11] CTOR%p %s", (void *)(uintptr_t)target, hx);
+              }
+          } else LOG("[va11] caller-0x30c 不是 bl：%08x", (unsigned)w);
+      } }
 #if !TARGET_OS_IPHONE
     { void dm_log_regions(uint64_t, uint64_t); dm_log_regions(regs[30] & ~(uint64_t)0xFFFFF, 4u << 20); }
 #endif
