@@ -96,7 +96,7 @@ DM_PATCHED=~/va11-work/patched ./build.sh      # → out/Va11IOS-unsigned.ipa + 
   「新游戏 → 开场旁白 → 下一段对话」（点按推进对白已验证；开场文本为日文，汉化语言待确认）。
 - `va11mobile/iosapp/out/cn_p1_rot.png` / `evidence_zh_dialogue.png`：中文默认生效（补丁中文在英文槽，前端默认 `DM_LANG=en-US`）。
 
-- `va11mobile/iosapp/out/Va11IOS-unsigned.ipa`（2026-10-18 00:14 重新打包，17.0 MB，sha256 前 24 位 `1c3dde55a47ac505509b4cd4`）：包含「默认中文（DM_LANG=en-US）」「点按补 A」「切后台不崩」三项修复。
+- `va11mobile/iosapp/out/Va11IOS-unsigned.ipa`（2026-10-18 10:25 重新打包，17,018,235 B，sha256 前 24 位 `eb79e3fdfd7a08b67367c0f2`）：包含「默认中文（DM_LANG=en-US）」「点按补 A」「切后台不崩」「帧同步点击队列 + 单步注入钩子」「按 switchbrew/libnx 修正 KeyboardState 0x30 与 MouseState Transferable|IsConnected」「[hid-read] 读侧统计」；结构校验 0 项红。
 - `va11mobile/iosapp/out/verify.txt`：无签名 ipa 结构校验（0 项红）。
 
 ## 合法使用声明
