@@ -2327,3 +2327,22 @@ ini_close()
 2. 我们的端口没有任何这些文件，加载链也没触发 → `dialog_files_texts` 为空 →
    `textbox_loadbox` 拿不到 INI 文本 → `input_text` 永不赋值 → day0 黑屏；
 3. 需要确认：Switch 版这些 `.txt` 是否在 **romfs** 里（我们此前 NSP 的 romfs 因缺 title key 未能解出）。
+
+## 实验：把 async 加载的 `os_type` 门强行置真，仍未触发文件加载（2026-10-19 15:4x）
+
+操作：在 game.win 的字节码里把 `gml_Object_async_init_Step_0` 的
+`pushbltn os_type`（0xa3e878，`0xC305ffff`）改成 `push.i16 21`（`0x840F0015`），
+让 `if (os_type == 21 || os_type == 14)` 恒真，然后用这份 game.win 启动（并放好 anna.txt/pro1.txt… 假文件）。
+
+结果：
+- 启动正常（`Entering main loop.`、ERROR=0）；
+- **依然没有任何 anna/pro1… 文件被打开**，只有 game.win 与 Waifu Preferences.txt。
+
+说明：**加载链根本没走到那一步**——问题不在 os_type 判断，而在更上游：
+`async_init` 这个对象/事件在我们端口里可能压根没运行（例如它挂在某个只在初始化房间创建的实例上，
+而我们端口直接进了标题房间），或者 `cur_ind`/列表为空导致提前 exit。
+
+### 下一轮
+1. 确认 `async_init` 对象是否被创建并运行（房间 `room == 10` 的判断是关键）；
+2. 若我们的启动流程跳过了初始化房间，那就是**移植侧启动顺序问题**——对齐后 day0 的台词加载才会发生；
+3. 同时继续等用户的 romfs/存档素材，用来核对台词文件到底在不在 romfs 里。
