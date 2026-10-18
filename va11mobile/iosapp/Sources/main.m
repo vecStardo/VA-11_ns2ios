@@ -125,6 +125,7 @@ static void tap_a_pulse(void);   // 点按补 A（视图与测试脚本共用）
 // Coordinate-carrying variant: the frame-synced mouse click must use the real hit point (menu items are not at the
 // screen centre); the no-argument variant pulses at the centre.
 static void tap_a_pulse_at(float nx, float ny);
+static void front_window_tap(float nx, float ny);   // 窗口级兜底注入（手势与 wintap 测试步共用） | window-level fallback injection (shared by the gesture and the wintap test step)
 static uint64_t pad_mask_of(const char *nm);   // 键名→掩码（DM_TEST_* 钩子用）| key name -> mask (used by the DM_TEST_* hooks)
 
 @interface Va11GLView : UIView
@@ -397,6 +398,9 @@ static void step_schedule(void) {
             // kbd:<HID usage>[,hold ms]: keyboard injection (HID usage; 40=Return, 44=Space, 82=Up, 81=Down, 80=Left, 79=Right)
             // stick:<lx>,<ly>[,毫秒]：推左摇杆（±32767），用于试「摇杆导航」的菜单
             // stick:<lx>,<ly>[,ms]: push the left stick (+-32767), for testing stick-driven menus
+            // wintap:x,y：走「窗口级兜底」同一条注入路径（模拟器里验证归一化/日志/注入）
+            // wintap:x,y: goes through the same injection path as the window-level fallback (validates normalisation/log/injection in the simulator)
+            else if (strcmp(op, "wintap") == 0) { float x = 0.5f, y = 0.5f; if (sscanf(arg, "%f,%f", &x, &y) == 2) { front_window_tap(x, y); } }
             else if (strcmp(op, "stick") == 0) { int lx = 0, ly = 0, ms = 400; if (sscanf(arg, "%d,%d,%d", &lx, &ly, &ms) >= 2) { extern void dm_pad_set(uint64_t, int32_t, int32_t, int32_t, int32_t); LOG("[test] 步:摇杆 (%d,%d) 保持 %d ms", lx, ly, ms); dm_pad_set(0, lx, ly, 0, 0); usleep((useconds_t)ms * 1000); dm_pad_set(0, 0, 0, 0, 0); } }
             else if (strcmp(op, "kbd") == 0) { int code = 0, ms = 150; if (sscanf(arg, "%d,%d", &code, &ms) >= 1) { LOG("[test] 步:键盘 0x%02x 按住 %d ms", code, ms); dm_kbd_press(code, ms); } }
             else LOG("[test] 步:未知 %s", t);
@@ -500,18 +504,22 @@ static void start_boot(void) {
 // 窗口级兜底手势的处理：把触点换算成画面归一化坐标后注入（与手指路径一致），300 ms 内视图已收到就跳过。
 // Handler for the window-level fallback gesture: normalise the point and inject through the same path as a finger,
 // skipping when the view already received a real touch within 300 ms.
+// 窗口级兜底注入的共用实现（手势与 DM_TEST_STEP 的 wintap 步都走这里）
+// Shared implementation of the window-level fallback injection (used by the gesture and by the wintap test step)
+static void front_window_tap(float nx, float ny) {
+    nx = nx < 0 ? 0 : nx > 0.999f ? 0.999f : nx; ny = ny < 0 ? 0 : ny > 0.999f ? 0.999f : ny;
+    LOG("[front] 窗口手势兜底 (%.3f,%.3f)", nx, ny);
+    dm_touch td = {0, nx, ny};
+    dm_touch_set(&td, 1); usleep(140000); dm_touch_set(NULL, 0);
+    tap_a_pulse_at(nx, ny);
+}
 - (void)onWindowTap:(UITapGestureRecognizer *)g {
     extern _Atomic uint64_t g_front_touch_ns;
     uint64_t last = atomic_load(&g_front_touch_ns);
     if (last && now_ns() - last < 300000000ull) return;   // 视图已经收到真实触摸，不重复 | the view already got the real touch: skip
     CGPoint p = [g locationInView:g_view];
     CGFloat w = g_view.bounds.size.width, h = g_view.bounds.size.height;
-    float nx = w > 0 ? (float)(p.x / w) : 0.5f, ny = h > 0 ? (float)(p.y / h) : 0.5f;
-    nx = nx < 0 ? 0 : nx > 0.999f ? 0.999f : nx; ny = ny < 0 ? 0 : ny > 0.999f ? 0.999f : ny;
-    LOG("[front] 窗口手势兜底 (%.3f,%.3f)", nx, ny);
-    dm_touch td = {0, nx, ny};
-    dm_touch_set(&td, 1); usleep(140000); dm_touch_set(NULL, 0);
-    tap_a_pulse_at(nx, ny);
+    front_window_tap(w > 0 ? (float)(p.x / w) : 0.5f, h > 0 ? (float)(p.y / h) : 0.5f);
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
