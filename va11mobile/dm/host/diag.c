@@ -497,6 +497,22 @@ void dm_scan_range(uint64_t vlo, uint64_t vhi, uint64_t lo, uint64_t hi) {
                     uint64_t v; memcpy(&v, buf + i, 8);
                     if (v >= vlo && v < vhi) {
                         LOG("[va11] 指向值栈的指针：@%p = %p", (void *)(uintptr_t)(p + i), (void *)(uintptr_t)v);
+                        // 命中若落在我们自己的模块里，换算成模块内偏移并 dump 该页（识别「值栈栈顶」全局用）。
+                        // If the hit lies inside one of our modules, convert to a module offset and dump that page (to
+                        // identify the "value stack top" global).
+                        { module_t *mm = module_of((const void *)(uintptr_t)(p + i));
+                          if (mm) {
+                              uint64_t off = (p + i) - (uint64_t)(uintptr_t)mm->base;
+                              LOG("[va11]   ↑ 模块 %s + %#llx", mm->name, (unsigned long long)off);
+                              uint64_t pg = (p + i) & ~(uint64_t)0x3F;
+                              uint8_t db[0x60]; vm_size_t dg = 0;
+                              if (vm_read_overwrite(mach_task_self(), (vm_address_t)pg, sizeof db, (vm_address_t)db, &dg) == KERN_SUCCESS) {
+                                  char dh[3 * 0x60 + 1]; size_t dO = 0;
+                                  for (size_t k = 0; k < sizeof db; k++) dO += (size_t)snprintf(dh + dO, sizeof dh - dO, "%02x", db[k]);
+                                  dh[dO] = 0;
+                                  LOG("[va11]   页%p %s", (void *)(uintptr_t)pg, dh);
+                              }
+                          } }
                         if (++hits >= 24) break;
                     }
                 }
