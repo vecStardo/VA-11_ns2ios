@@ -2109,3 +2109,21 @@ gml_Script_textbox_create  条目 0xaea51c len=164  locals=2 args=0  → 字节�
 1. 修正 VARI 编号空间（变量 id ↔ 名字），把 `with` 块里的每个 `pop 变量` 变成可读名字 —— 直接看是不是 `input_text`；
 2. 若 `textbox_create` 确实赋了 `input_text`，那问题就变成「这段代码为何没跑/跑错实例」，
    可在运行期用观测门/断点确认 `pushenv` 之后的赋值是否执行。
+
+## VARI 变量表的编号空间仍未对齐（2026-10-19 11:4x）
+
+尝试了三种 VARI 解析假设，都没能自洽地把「变量 id → 名字」建立起来：
+
+| 假设 | 结果 |
+|---|---|
+| `'VARI'` + size + count(2892) + 12 字节定长条目（起点 +12） | 总长度对不上（2892×12 只占 34704，chunk 有 146920） |
+| 起点 +8、12 字节定长、按 chunk 长度算 12242 条 | 能命中 `input_text`（第 5980 条，`{2217, 2, 0xa33984}`），但其它条目名字大量是 `?` |
+| 12 字节头 + 跟随 `occurrences` 个 u32 的变长条目 | 恰好读到 chunk 末尾（8122 条），但首字节段全是 `?`，名字仍解不出 |
+
+结论：`occurrences`/`first` 之后确实还跟着**每个出现位置的偏移数组**（变长），但 `name` 字段的编码方式（字符串索引？绝对地址？）
+与 CODE 表不同，需要再核对一版 `UndertaleVariable` 的真实结构（libgm 的 `gamemaker/elements/variable.rs` 可作为依据）。
+
+### 下一轮
+1. 直接照 libgm 的 `variable.rs` 实现解析（它支持 WAD15+ 的变长条目），把 2892 个变量的名字全部解出来；
+2. 用正确的变量名重新跑 `tools/gml_decode.py`，把 `textbox_create` 的 `with` 块里每条赋值念出来 ——
+   这一步做完就能确认 `input_text` 是在哪里被赋值的。
