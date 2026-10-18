@@ -24,6 +24,17 @@ va11mobile/
   docs_ref/                  d2r-mobile 的文档备份（对外部参考，不是 VA-11 专属说明）
 ```
 
+
+## 安装（day0 已可正常游玩）
+
+1. 把 **打过台词补丁的 `game.win`** 放进 App 数据目录的 `Documents/save/game.win`
+   （补丁与现成产物见 `tools/romfs_patch/` 与 iCloud `Va11IOS-patched-data/`）；
+2. 把 `eng/` 整个目录放进 `Documents/save/eng/`（`romfs/scripts/eng` 的内容，zip 同上）；
+3. 启动 App → 点新游戏即可进入酒吧场景。
+
+> 说明：原版数据 + 原版逻辑也能启动，但会卡在 day0（台词表加载不到，`textbox_loadbox` 崩溃）。
+> 上面第 1、2 步就是绕过这条移植缺口的正式修法，细节见 `tools/romfs_patch/README.zh-CN.md`。
+
 ## 怎么工作（架构）
 
 游戏本体是 Switch 的 GameMaker 运行时（YYC）加一份 `game.win` 数据包，和 iPhone 同为 arm64。
