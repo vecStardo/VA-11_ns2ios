@@ -1634,3 +1634,27 @@ Apple 用户态**不允许**写 TPIDRRO_EL0，这条路封死。
    再 `b` 回原地址+4；
 3. 先 mprotect 成可写、patch 完再改回 RX 并 `sys_icache_invalidate`；
 4. 这条修法同时覆盖「桩表」和「GM 线程状态访问」两处，若成立，day0 的实参丢失应当消失。
+
+## 首版「游戏代码 TLS 读取重定向」：机制跑通，但会崩（2026-10-18 26:2x）
+
+按上一轮设计实现了重定向引擎（`diag.c`，实验开关 `DM_TLS_REDIRECT=1`，默认关闭）：
+
+- 用 `mach_vm_region` 遍历 guest 地址空间里的 RX 映射；
+- 用 `vm_read_overwrite` 分块读（直接解引用会 SIGBUS），扫 `mrs Rt, tpidrro_el0`（`0xD53BD060|Rt`）；
+- 过滤器：要求后两条指令是 `adrp` + `ldr`（真代码序列才有这个形态，避免改到数据里碰巧相同的字）；
+- 每条命中处改写成 `b trampoline_Rt`；trampoline（9 条指令，**保存/恢复 x9**）把 `g_va11_tlr_current`
+  载入 Rt 后跳回；trampoline 页按区域就近 `mmap`（先 RW 写码，再 mprotect RX + 刷 icache）。
+
+实测：**机制完全跑通** —— 5 个 RX 区域、共改写 **34,722 处**（含 128KB 桩区 3116 处）。
+
+但随后崩溃：`sig=11 addr=0x1f8 pc=sdk+0xa9f74`（读 `[x+0x1f8]`，x=0），即某处代码拿到 **NULL 的 TLR 基址**
+（很可能是在**没有做过 guest_thread_init 的线程**上跑，`g_va11_tlr_current` 是全局单值、也没按线程更新）。
+另外把 4 万多处一并改写也波及了 sdk/main 自己的代码，风险偏大。
+
+→ 已把该功能改为**默认关闭的实验开关**，不影响正常构建。
+
+### 下一轮
+1. 把 `g_va11_tlr_current` 换成**按线程**取值：trampoline 里改成读一个「线程局部」的宿主 TSD 槽
+   （或用 `mrs x9, tpidr_el0` 取宿主 TLS 再偏移），保证任何线程都拿到自己的 TLR；TLR 为空时跳过改写；
+2. 只改写**游戏代码区**（我们识别出的 16MB 纯代码段）与桩区，不动 sdk/main 模块；
+3. 再试 day0：若报错消失，说明根因确认，随后把这套逻辑移植到 iOS 侧（guest 代码页同样是我们 mmap 的匿名内存）。

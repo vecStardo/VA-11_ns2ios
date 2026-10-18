@@ -19,6 +19,7 @@
 #include <malloc/malloc.h>
 #include <sys/mman.h>
 #include <libkern/OSCacheControl.h>
+#include <errno.h>
 #include <mach/mach.h>
 #if defined(__APPLE__)
 #include <pthread/qos.h>
@@ -444,6 +445,125 @@ static void setlang_obs(const uint64_t *regs) {
 // type tag, 2 = array), x2 = index.
 // 给调试器用的失败钩子：非数组索引发生时调用（空实现，lldb 在这里下断点即可抓到现场）。
 // Debugger hook: called when a non-array index happens (empty; set an lldb breakpoint here to catch the site).
+
+#if !TARGET_OS_IPHONE
+#include <mach/mach_vm.h>
+#include <libkern/OSCacheControl.h>
+#include <sys/mman.h>
+// ---- 游戏代码 TLS 读取重定向（实验） ----
+// 游戏自己的编译代码用 `mrs Rt, tpidrro_el0` 读 GM 的线程状态，Apple 上这个寄存器是宿主 pthread 的，
+// 和模拟 TLR 不是同一块 → 参数栈对不上。Apple 用户态不许写 TPIDRRO_EL0（实测 SIGILL），
+// 所以改为：把每条 `mrs Rt, tpidrro_el0` 换成 `b trampoline_Rt`，trampoline 把「模拟 TLR 指针」写进 Rt 再跳回。
+// ---- Redirect the game code's TLS reads (experiment) ----
+// The game's own compiled code reads GM's per-thread state with `mrs Rt, tpidrro_el0`, which on Apple is the host
+// pthread's register and differs from our emulated TLR, so the argument stack does not line up. Writing TPIDRRO_EL0
+// from user space is illegal on Apple (measured SIGILL), so instead replace every `mrs Rt, tpidrro_el0` with
+// `b trampoline_Rt`, where the trampoline puts the emulated TLR pointer into Rt and jumps back.
+uint64_t g_va11_tlr_current;      // 当前线程的模拟 TLR（trampoline 从这里读） | emulated TLR of the current thread
+static void *g_va11_tramp_page;
+static int g_va11_tls_redirected;
+static void dm_emit32(uint8_t **p, uint32_t w) { memcpy(*p, &w, 4); *p += 4; }
+static uint32_t dm_branch(uint64_t from, uint64_t to) { return 0x14000000u | ((((int64_t)(to - from)) >> 2) & 0x3FFFFFFu); }
+// 生成 Rt 专用 trampoline：adrp/add 取 &g_va11_tlr_current → ldr → mov Rt,x9 → b back
+// Emit the trampoline for one Rt: adrp/add of &g_va11_tlr_current -> ldr -> mov Rt,x9 -> b back
+static uint64_t dm_make_tramp(uint8_t *page, int Rt, uint64_t back) {
+    uint8_t *p = page;
+    uint64_t g = (uint64_t)(uintptr_t)&g_va11_tlr_current, pc = (uint64_t)(uintptr_t)page;
+    int64_t delta = ((int64_t)(g & ~0xFFFull) - (int64_t)(pc & ~0xFFFull)) >> 12;
+    uint32_t immlo = (uint32_t)(delta & 3), immhi = (uint32_t)((delta >> 2) & 0x7FFFF);
+    // 暂存/恢复 x9：trampoline 只能用 x9 当临时寄存器，改之前必须先保存，否则会破坏调用点仍在用的值。
+    // Save/restore x9: the trampoline can only use x9 as scratch and must preserve it, or it clobbers a live value.
+    dm_emit32(&p, 0xD10043FFu);                                   // sub  sp, sp, #0x10
+    dm_emit32(&p, 0xF90003E9u);                                   // str  x9, [sp]
+    dm_emit32(&p, 0x90000000u | (immlo << 29) | (immhi << 5) | 9);// adrp x9, page(&g_va11_tlr_current)
+    dm_emit32(&p, 0x91000000u | ((uint32_t)(g & 0xFFF) << 10) | (9 << 5) | 9);  // add x9, x9, #off
+    dm_emit32(&p, 0xF9400000u | (9 << 5) | 9);                    // ldr  x9, [x9]
+    dm_emit32(&p, 0xAA0903E0u | (uint32_t)Rt);                    // mov  Rt, x9
+    dm_emit32(&p, 0xF94003E9u);                                   // ldr  x9, [sp]
+    dm_emit32(&p, 0x910043FFu);                                   // add  sp, sp, #0x10
+    dm_emit32(&p, dm_branch((uint64_t)(uintptr_t)p, back));       // b    back
+    return (uint64_t)(uintptr_t)page;
+}
+// 扫描 guest 地址空间里的 RX 段，找出 `mrs Rt, tpidrro_el0` 全部改写；返回改写条数。
+// Scan the guest address space for RX regions, rewrite every `mrs Rt, tpidrro_el0`; returns how many were rewritten.
+int dm_tls_redirect_all(uint64_t tlr) {
+    { const char *e = getenv("DM_TLS_REDIRECT"); if (!e || !*e) return 0; }   // 实验开关：默认关闭，不影响正常产物 | experimental, off by default
+    if (g_va11_tls_redirected) return 0;
+    g_va11_tls_redirected = 1;
+    g_va11_tlr_current = tlr;
+    int total = 0;
+    mach_vm_address_t a = 0x100000000ull;
+    for (int guard = 0; guard < 2048 && a < 0x4000000000ull; guard++) {
+        mach_vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_port_t obj = MACH_PORT_NULL;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_vm_address_t ra = a;
+        kern_return_t kr = mach_vm_region(mach_task_self(), &ra, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj);
+        if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+        if (kr != KERN_SUCCESS) break;
+        a = ra + sz;
+        if (!(info.protection & VM_PROT_EXECUTE) || sz < 0x1000 || sz > (256u << 20)) continue;
+        // 用 vm_read_overwrite 分块读（直接解引用可能碰到未映射页 → SIGBUS），再统计桩点。
+        // Read in chunks with vm_read_overwrite (dereferencing may hit an unmapped page -> SIGBUS), then count the sites.
+        uint8_t *buf = malloc(sz);
+        if (!buf) continue;
+        vm_size_t got = 0;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)ra, sz, (vm_address_t)buf, &got) != KERN_SUCCESS) { free(buf); continue; }
+        int hits = 0;
+        for (uint64_t off = 0; off + 4 <= got; off += 4) { uint32_t w; memcpy(&w, buf + off, 4); if ((w & 0xFFFFFFE0u) == 0xD53BD060u) hits++; }
+        if (!hits) { free(buf); continue; }
+        // 每区域单独分配 trampoline 页，尽量贴近该区域（B 只能跳 ±128MB）。
+        // Allocate one trampoline page per region, as close to it as possible (B reaches only +/-128MB).
+        uint8_t *tp = NULL;
+        uint64_t cand[3] = { (ra + got + 0xFFFF) & ~(uint64_t)0xFFFF, (ra > 0x200000 ? (ra - 0x200000) & ~(uint64_t)0xFFFF : 0), 0 };
+        for (int ci = 0; ci < 3 && !tp; ci++) {
+            if (!cand[ci]) continue;
+            void *m = mmap((void *)(uintptr_t)cand[ci], 0x4000, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+            if (m == MAP_FAILED) continue;
+            int64_t dd = (int64_t)(uintptr_t)m - (int64_t)ra;
+            if (dd > -(120 << 20) && dd < (120 << 20)) tp = m; else munmap(m, 0x4000);
+        }
+        if (!tp) { LOG("[va11] TLS 重定向：区域 %p 附近分配不到 trampoline 页，跳过（%d 处）", (void *)(uintptr_t)ra, hits); free(buf); continue; }
+        uint64_t tramps[32]; memset(tramps, 0, sizeof tramps);
+        int patched = 0, skipped = 0;
+        uint64_t dirty_lo = ~0ull, dirty_hi = 0;
+        for (uint64_t off = 0; off + 4 <= got; off += 4) {
+            uint32_t w; memcpy(&w, buf + off, 4);
+            if ((w & 0xFFFFFFE0u) != 0xD53BD060u) continue;
+            if (off + 12 > got) continue;
+            uint32_t w2, w3; memcpy(&w2, buf + off + 4, 4); memcpy(&w3, buf + off + 8, 4);
+            // 真代码序列：mrs Rt,tpidrro_el0 ; adrp x?,#page ; ldr x?,[x?]（数据里碰巧同字的不在此列）
+            // Real code sequence: mrs Rt,tpidrro_el0 ; adrp ; ldr. Coincidental data words are filtered out here.
+            if ((w2 & 0x9F000000u) != 0x90000000u) continue;
+            if ((w3 & 0xFFC00000u) != 0xF9400000u) continue;
+            int Rt = (int)(w & 0x1F);
+            uint64_t site = ra + off, back = site + 4;
+            if (!tramps[Rt]) tramps[Rt] = dm_make_tramp(tp + 0x30 * Rt, Rt, back);
+            int64_t d = (int64_t)tramps[Rt] - (int64_t)site;
+            if (d < -(128 << 20) || d > (128 << 20)) { skipped++; continue; }
+            uint32_t nb = dm_branch(site, tramps[Rt]);
+            memcpy(buf + off, &nb, 4);
+            patched++;
+            if (site < dirty_lo) dirty_lo = site;
+            if (site > dirty_hi) dirty_hi = site;
+        }
+        if (patched) {
+            uint64_t lo = dirty_lo & ~(uint64_t)0xFFF, hi = (dirty_hi + 0x1000) & ~(uint64_t)0xFFF;
+            if (mprotect((void *)(uintptr_t)lo, (size_t)(hi - lo), PROT_READ | PROT_WRITE) == 0) {
+                kern_return_t wk = mach_vm_write(mach_task_self(), (vm_address_t)lo, (vm_address_t)(buf + (lo - ra)), (mach_msg_type_number_t)(hi - lo));
+                mprotect((void *)(uintptr_t)lo, (size_t)(hi - lo), PROT_READ | PROT_EXEC);
+                sys_icache_invalidate((void *)(uintptr_t)lo, (size_t)(hi - lo));
+                if (wk != KERN_SUCCESS) LOG("[va11] TLS 重定向：写回失败 kr=%d", (int)wk);
+            }
+        }
+        mprotect(tp, 0x4000, PROT_READ | PROT_EXEC);
+        sys_icache_invalidate(tp, 0x4000);
+        LOG("[va11] TLS 重定向：区域 %p+%#llx 命中 %d 处，改写 %d，跳过 %d", (void *)(uintptr_t)ra, (unsigned long long)got, hits, patched, skipped);
+        total += patched;
+        free(buf);
+    }
+    LOG("[va11] TLS 重定向完成：共改写 %d 处", total);
+    return total;
+}
+#endif
 #if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
 // 列出 [lo, lo+len) 范围内的所有 vm 区域（起点/大小/当前权限），用来把代码 dump 按映射边界切成
@@ -543,7 +663,12 @@ static void va11_array_obs(const uint64_t *regs) {
     // evolution just before the crash is visible (normal array reads vs a sudden undefined value).
     { static struct { uint64_t src; int64_t idx; uint32_t tag; } ring[16]; static int rn, rpos;
       if (tag == 2) {
-          { static int first; if (!first++) dm_log_tlr("首次取值"); }
+          { static int first; if (!first++) { dm_log_tlr("首次取值");
+#if !TARGET_OS_IPHONE
+              { extern uint64_t g_va11_tlr_current; void *tlr = pthread_getspecific(g_keytlr); int dm_tls_redirect_all(uint64_t);
+                if (tlr) dm_tls_redirect_all((uint64_t)(uintptr_t)tlr); }
+#endif
+          } }
           ring[rpos].src = src; ring[rpos].idx = (int64_t)(int32_t)idx; ring[rpos].tag = tag;
           rpos = (rpos + 1) & 15; if (rn < 16) rn++;
           return;
