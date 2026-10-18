@@ -53,6 +53,9 @@ typedef struct {
     qent q[QMAX]; _Atomic uint32_t q_head, q_tail;       // 待播：游戏侧写，出声端读 | Pending: written by the game side, read by the output side
     qent rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // 已释放：出声端写，游戏侧读 | Released: written by the output side, read by the game side
     uint64_t pos;                      // 当前块已播字节 | Bytes already played of the current block
+    int16_t xf[128 * 2];               // 接缝交叉淡化：上一段最后 128 帧 | seam crossfade: last 128 frames of the previous segment
+    size_t xf_frames;                  // xf 里有效的帧数 | valid frames in xf
+    uint64_t gpos;                     // 已输出帧数（全局），用于每 800 帧接缝 | frames delivered so far (global), for the 800-frame seam
     AudioUnit au;
     int mix;                           // 1 = 游戏给 5.1（6 声道），交给 CoreAudio 前我们自己下混成双声道（au_render） | 1 = the game gives 5.1 (6 channels), downmixed to stereo by us before handing to CoreAudio (au_render)
     int16_t *mixbuf;                   // 下混用的 6 声道暂存（MIXMAX 帧） | 6-channel staging for the downmix (MIXMAX frames)
@@ -142,11 +145,38 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
             memset(dst, 0, n); break; }
         qent e = a->q[qh & (QMAX - 1)];
         uint64_t k = e.size - a->pos; if (k > n) k = n;
-        memcpy(dst, e.ptr + a->pos, k);
-        {   // 满刻度样本计数：真机若「爆」，先看是不是数据就削顶了 | count full-scale samples: if the device "crackles", check whether the data already clips
-            const int16_t *pcm = (const int16_t *)(e.ptr + a->pos); size_t ns = (size_t)k / 2; uint64_t c = 0;
-            for (size_t i = 0; i < ns; i++) if (pcm[i] >= 32767 || pcm[i] <= -32767) c++;
-            if (c) atomic_fetch_add_explicit(&a->st_clip, c, memory_order_relaxed);
+        // 接缝交叉淡化：游戏每个 AudioOutBuffer（6400 B = 1600 帧）内部在 size/2 处、以及缓冲接缝处
+        // 都有一次不连续（每 800 帧 ≈ 16.67 ms = 60 Hz）→ 爆音。做法：在接缝后的 128 帧里，把"接缝前 128 帧"
+        // 与"接缝后 128 帧"线性混合，等于把跳变摊成 2.7 ms 的平滑过渡。
+        // Seam crossfade: inside every AudioOutBuffer (6400 B = 1600 frames) a discontinuity sits at size/2, and
+        // another at the buffer seam (every 800 frames = 16.67 ms = 60 Hz), which clicks. Over the 128 frames after
+        // each seam, linearly blend the 128 frames before the seam with the 128 frames after it (a 2.7 ms ramp).
+        {
+            const size_t XF = 128;
+            size_t frames = (size_t)(k / 4);
+            const int16_t *c = (const int16_t *)(e.ptr + a->pos);
+            int16_t *o = (int16_t *)dst;
+            uint64_t half = e.size / 2; if (!half) half = e.size;
+            for (size_t f = 0; f < frames; f++) {
+                uint64_t pos = a->pos + (uint64_t)f * 4;
+                uint64_t rem = pos % half;
+                if (rem < XF * 4) {
+                    size_t idx = (size_t)(rem / 4);
+                    float w = (float)(idx + 1) / (float)XF;
+                    const int16_t *tail;
+                    if (f >= XF) tail = c + 2 * (f - XF + idx);           // 接缝前 128 帧就在本块内
+                    else if (a->xf_frames >= XF) tail = a->xf + 2 * idx;  // 接缝落在本块开头：用上一块末尾
+                    else tail = NULL;
+                    if (tail) {
+                        o[2*f]   = (int16_t)(tail[2*idx]   * (1.0f - w) + c[2*f]   * w);
+                        o[2*f+1] = (int16_t)(tail[2*idx+1] * (1.0f - w) + c[2*f+1] * w);
+                        continue;
+                    }
+                }
+                o[2*f] = c[2*f]; o[2*f+1] = c[2*f+1];
+            }
+            { size_t keep = frames < XF ? frames : XF;
+              if (keep) { memcpy(a->xf, dst + (frames - keep) * 4, keep * 4); a->xf_frames = keep; } }
         }
         dst += k; n -= k; a->pos += k;
         if (a->pos >= e.size) {
