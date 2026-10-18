@@ -2004,3 +2004,23 @@ trying to index a variable which is not an array
 
 ⇒ **最终结论固定为**：移植里**任何 textbox 创建都会失败**；能正常工作的只有不含 textbox 的界面
 （标题、菜单、读档列表）。这解释了用户从第一天起的「新游戏黑屏」以及现在「读档也卡死」。
+
+## 数据文件结构打通：能按名字定位到变量与代码地址（2026-10-19 08:1x）
+
+终于把 `data.win` 的几套表对齐了（此前解析失败是我把 chunk 偏移误当成相对 `program.nca` 基准）：
+
+| 表 | 位置 | 结构 | 用途 |
+|---|---|---|---|
+| `STRG` | `0xb301c0` | `u32`, count, 然后 count 个 **绝对文件偏移**，字符串为 `u32 长度 + 字节` | 名字表 |
+| `VARI` | `0xafaba0` | 从 +8 起每 **12 字节**一条 `{name_idx, occurrences, first_addr}` | 变量名 → 出现次数 / 首次代码地址 |
+| `CODE` | `0x965b70` | `'CODE'` + size + `count=3517` + 偏移数组 | 每个 code 的头部 + 字节码 |
+
+实测：`STRG` 里 **`input_text` = 索引 2217**；
+`VARI` 里找到 `{name_idx=2217, occurrences=2, first_addr=0xa33984}` ——
+即 **`input_text` 在代码里只出现 2 次**，第一次就在 `0xa33984`（CODE 区内的字节码）。
+
+### 下一轮
+1. 用 `first_addr` 反查它属于哪个 code（哪段 GML），把那段字节码解出来 ——
+   2 次出现大概率就是「一次写 + 一次读」，能直接看到**写的那个上下文是哪个脚本/事件**；
+2. 如果字节码不好解，就走用户提到的 RE 工具（UndertaleModTool 能直接反编译 GML），
+   导出 `gml_Script_textbox_create` / `obj_textbox` Create / `gml_Script_textbox_loadbox` 三处代码对照。
