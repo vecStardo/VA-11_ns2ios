@@ -79,6 +79,29 @@ DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=~/va11-work/patched ./build.sh   # 干净
 出包脚本会完成：内嵌映像 → `xcodebuild`（无签名、arm64）→ `Payload` → `out/Va11IOS-<版本>-unsigned.ipa`
 → 结构校验（段 / bundle / 版本号 / ad-hoc 签名演练），必须报告 **0 项红**。
 
+## 工作目录（为什么不在仓库里）
+
+构建工作目录默认是 `~/va11-work`（可用 `VA11_WORK=/路径` 改）。它存放解包后的游戏文件、改写后的模块
+和大量调试 dump——从几百 MB 到几十 GB，并且包含游戏数据与密钥。把它**刻意放在仓库之外**，
+沿用 d2r-mobile 的 `$DM_ROOT` 约定：
+
+- 仓库保持干净、体积可控（不含游戏目录时约 200 MB），`git status` 不会碰到 500 MB 的二进制或密钥；
+- 合法边界：游戏数据与密钥永远不在 git 根目录下，不可能被误提交；
+- 备份/同步工具与 IDE 不会去索引、上传几十 GB 的临时 dump。
+
+典型结构：
+
+```
+~/va11-work/
+  orig/game.win      解包数据（你自己的）
+  exefs/             原始游戏模块（你自己的）
+  patched/           出包用的改写产物
+  keys/prod.keys     你的密钥（永不进仓库）
+  extract_x/         NSP 解包临时目录（可删）
+```
+
+需要换位置时设 `VA11_WORK=...`，辅助脚本与 `tools/` 都会跟随该变量。
+
 ## 仓库结构
 
 ```

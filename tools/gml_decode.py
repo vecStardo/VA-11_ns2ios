@@ -14,7 +14,8 @@ import struct
 import sys
 import os
 
-GAME = os.environ.get("VA11_GAME_WIN", os.path.expanduser("~/va11-work/orig/game.win"))
+WORK = os.path.expanduser(os.environ.get("VA11_WORK", "~/va11-work"))
+GAME = os.environ.get("VA11_GAME_WIN", os.path.join(WORK, "orig/game.win"))
 d = open(GAME, "rb").read()
 
 CODE_OFF = 0x965b70

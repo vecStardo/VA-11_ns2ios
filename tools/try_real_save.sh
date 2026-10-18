@@ -9,7 +9,8 @@ set -eu
 SAVE=$1
 SECS=${2:-60}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-WORK=$HOME/va11-work/run_real
+VA11_WORK=${VA11_WORK:-$HOME/va11-work}
+WORK=$VA11_WORK/run_real
 [ -f "$SAVE/game.win" ] || { echo "🔴 $SAVE 里没有 game.win"; exit 1; }
 rm -rf "$WORK"; mkdir -p "$WORK/save" "$WORK/temp"
 for f in "$SAVE"/*; do
@@ -23,7 +24,7 @@ cd "$HERE/va11mobile/dm/host"
 [ -x ./dmhost_m3 ] || make dmhost_m3
 EV="12000:0.5,0.5;20000:0.12,0.15;27000:0.503,0.748;31000:0.503,0.748;35000:0.503,0.748"
 DM_HEADLESS=1 DM_HLE_TOLERANT=1 DM_TAP="$EV" DM_SAVE="$WORK/save" DM_TEMP="$WORK/temp" \
-  ./dmhost_m3 "$HOME/va11-work/patched_obs" main sdk subsdk0 subsdk1 > "$WORK/run.log" 2>&1 &
+  ./dmhost_m3 "$VA11_WORK/patched_obs" main sdk subsdk0 subsdk1 > "$WORK/run.log" 2>&1 &
 PID=$!
 sleep "$SECS"; kill $PID 2>/dev/null; sleep 2; kill -9 $PID 2>/dev/null
 echo "---- 关键行 ----"

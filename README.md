@@ -84,6 +84,32 @@ The build script embeds the rewritten images, runs `xcodebuild` (unsigned, arm64
 `Payload`, writes `out/Va11IOS-<version>-unsigned.ipa`, and verifies the result (segments, bundle,
 version, ad-hoc signing rehearsal) — it must report **0 red items**.
 
+## Working directory (why it lives outside the repository)
+
+The build workspace defaults to `~/va11-work` (override with `VA11_WORK=/path/to/work`). It holds the
+extracted game files, the rewritten modules and big debug dumps — hundreds of megabytes to tens of
+gigabytes, and it contains game data and keys. It is deliberately **outside** this repository,
+following the d2r-mobile convention (`$DM_ROOT`):
+
+- the repository can stay clean and small (currently ~200 MB without the game data folder), and
+  `git status` never trips over 500 MB binaries or keys;
+- legal boundary: game data and keys never sit under a git root, so they cannot be committed by
+  accident;
+- backups/sync tools and IDEs do not index or upload tens of gigabytes of transient dumps.
+
+Typical layout:
+
+```
+~/va11-work/
+  orig/game.win      extracted data (yours)
+  exefs/             original game modules (yours)
+  patched/           rewritten modules used for packaging
+  keys/prod.keys     your keys (never in the repo)
+  extract_x/         NSP extraction scratch (can be deleted)
+```
+
+Set `VA11_WORK=...` to relocate it; the helper scripts and `tools/` honor that variable.
+
 ## Repository layout
 
 ```
