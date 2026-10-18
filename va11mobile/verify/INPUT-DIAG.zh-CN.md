@@ -2047,3 +2047,31 @@ x19=0x3f814bef0 x21=… sp/fp: x28=0x109af9f0c x29=0x16d999ed0 x26=0x109af5e62 x
 1. 用「对象索引 → OBJT 条目 → 变量定义表」这条链，确认 `obj_textbox` 实例的变量表里 `input_text` 的槽位；
 2. 或者（更快）请用户用 **UndertaleModTool** 反编译导出三处 GML：
    `gml_Script_textbox_create`、`obj_textbox` 的 Create 事件、`gml_Script_textbox_loadbox`。
+
+## 打通 CODE 条目布局：能拿到任意脚本的 GML 字节码（2026-10-19 10:0x）
+
+`CODE` 条目 20 字节，布局（`<IIHHII`）：
+
+| 字段 | 含义 |
+|---|---|
+| u32 name_addr | **名字串的绝对地址**（不是索引！） |
+| u32 length | 字节码长度 |
+| u16 locals / u16 args | 局部变量数 / 参数数 |
+| i32 bytecode_rel | **字节码地址 = 条目地址 + 该值** |
+| u32 reserved | 0 |
+
+实测三处：
+
+```
+obj_textbox Create     条目 0xaed050  len=5260 locals=7 args=0  → 字节码 0xa51888
+gml_Script_textbox_loadbox 条目 0xaea5a8 len=1324 locals=12 args=0 → 字节码 0x9a94c8
+gml_Script_textbox_create  条目 0xaea51c len=164  locals=2 args=0  → 字节码 0x9a1560
+```
+
+`textbox_create` 只有 **164 字节**、2 个局部变量、**0 个参数** —— 说明它不是靠参数接收文本，
+文本更可能来自全局变量（例如 `global.` 里某个字段）或 `argument` 之外的来源。
+
+### 下一轮
+1. 写一个最小 GML 字节码解码器（已知 `0x45` 一类的变量访问操作码），把 `textbox_create` 这 164 字节解出来，
+   看它到底往 `input_text` 里放了什么；
+2. 顺带解 `obj_textbox` Create 事件（5260 字节），确认它是否给 `input_text` 赋初值。
