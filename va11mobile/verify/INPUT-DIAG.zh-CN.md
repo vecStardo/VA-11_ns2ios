@@ -1139,3 +1139,40 @@ tools/repro_day0.sh 80
    「调用它的 stub 目标寄存器 x22」在门回调里顺手打出来 → 下一轮加这个记录）；
 3. 若仍难以定位，改从数据侧验证：把 `game.win` 里 `gml_Script_textbox_loadbox` 符号表条目附近的
    名字表（`gml_Object_obj_textbox_*`、`textbox_*` 变量名）与代码段做交叉索引。
+
+## 更大窗口反汇编：x25 是运行时临时值；并从 NCA 第三段找到 runner 的路径前缀（2026-10-18 17:1x）
+
+把帧 0 的 dump 放大到 0x800 反汇编，得到 `x25` 的来源链（函数内偏移，基址=caller-0x800）：
+
+```
++0x4f0: mov x1, x19
++0x4f4: bl  <运行时函数>            ; 返回值 x0 → x25
++0x4f8: mov x25, x0
++0x4fc: str xzr, [x25, #-0x10]!      ; 压一个值槽
++0x500: str wzr, [x25, #0xc]         ; 类型标签清 0（构造临时值）
+...
++0x7f0: mov x1, x25                  ; 把这个临时值当参数
++0x7f4: mov x3, x19
++0x7f8: blr x22                      ; 经 TLS 函数指针表调用 GML 函数 → 里面发生非数组索引
+```
+
+即：**被索引的值是刚构造出来的临时值（先把类型标签写成 0/未初始化，随后被当数组索引）**，
+与观测门报的「标签 0xffffff、下标 0」一致。
+
+另外把 NCA 三段都扫了一遍（`program.nca` 是 NCZ 头部 + 三段拼接）：
+
+| 段 | 偏移 | 大小 | 内容 |
+|---|---|---|---|
+| 0 | 0x4000 | 96 KB | 启动 logo PFS0（NintendoLogo.png / StartupMovie.gif） |
+| 1 | 0x1c000 | 561 MB | 程序主段（含 ExeFS 与 game.win 数据） |
+| 2 | 0x21798000 | 23 MB | **sdk 模块的字符串/数据区**：能直接读到
+`YYG GameMaker Runner`、`host:/`、`rom:/`、`save:/`、`game.win`、`V1.0`、`OpenGL: v…` 等 |
+
+→ 说明 **GM runner 自带 `host:/ rom:/ save:/` 三套路径抽象**；台词文件是否走 `rom:/` 只需看运行时是否请求它
+（本轮日志里没有任何 `rom:` 相关请求或挂载）。
+
+### 下一轮
+1. 把 `DM_ROMFS` 指到一个**真实 romfs 目录**（先从 NSP 正确解出 romfs：现成的 `dm/tools/extract_game.sh`/`nx_extract`
+   或 nsz 的 NCA 解析），再复现一次，看 runner 是否因此发出 `rom:` 请求 / 台词表是否被填上；
+2. 同时把 `host:/` 目录里放一份 `scripts/eng/1.2/`（文件名从 game.win 的文件表里已经能看到）做对照，
+   观察是否出现新的 `fs open` 请求。

@@ -493,8 +493,8 @@ static void va11_array_obs(const uint64_t *regs) {
           if (lr && d < 4) {
               // 帧 0 是真正调用 helper 的 GML 函数（textbox_loadbox），dump 更长一段好把「x25 从哪来的」看全。
               // Frame 0 is the GML function that calls the helper (textbox_loadbox); a longer dump shows where x25 came from.
-              size_t len = (d == 0) ? 0x300 : 0x40;
-              uint8_t fb[0x300]; vm_size_t fg = 0; char fh[3 * 0x300 + 1]; size_t fo = 0;
+              size_t len = (d == 0) ? 0x800 : (d <= 3 ? 0x120 : 0x40);
+              uint8_t fb[0x800]; vm_size_t fg = 0; char fh[3 * 0x800 + 1]; size_t fo = 0;
               if (vm_read_overwrite(mach_task_self(), (vm_address_t)(lr - len), len, (vm_address_t)fb, &fg) == KERN_SUCCESS && fg == len) {
                   for (size_t i = 0; i < fg && fo + 3 < sizeof fh; i++) fo += (size_t)snprintf(fh + fo, sizeof fh - fo, "%02x", fb[i]);
                   fh[fo] = 0;
