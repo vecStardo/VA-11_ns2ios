@@ -403,3 +403,29 @@ _ZN2nn3hid29Set/GetNpadHandheldActivationMode…
 四种输入在同一采样时刻得到过相同 hash（`1cbeeeb97f45`）也得到过不同 hash。
 → 后续验收改为**内容分类**（例如对截图做一次视觉判定是「标题 / attract 演示 / 对话」）或
 直接读游戏内部状态，而不是比 hash。
+
+## 突破：不再伪造鼠标，输入通了（2026-10-18 11:2x）
+
+按「真机 fidelity」改了一个点：**Switch 没有鼠标设备，官方 runner 看到的 `GetMouseStates` 永远是 0 条**，
+而我们一直伪造「已连接鼠标」（`MouseState.button/attribute` 非空）。加开关验证：
+
+```
+DM_NO_MOUSE=1：GetMouseStates 返回 0 条
+[hid-read] 每秒读取 npad=26 touch=26 mouse=0 kbd=26   ← mouse 接口仍被轮询，但拿不到状态
+```
+
+结果（同一套点按脚本）：**点按立刻进入游戏 UI** —— 截图 `out/nm_50.png` 是游戏内 **LOAD（读档）界面**：
+保存槽 1–6、LOAD 标题、光标手、R/L 提示都在，且 `nav_50.png` 里光标换到了另一个槽位（输入在导航）。
+
+### 结论
+
+之前伪造的「已连接鼠标」让官方 runner 走了鼠标路径并把**触屏合成 `device_mouse` 的路径遮蔽**，
+所以标题永远不前进；按真机语义返回「无鼠标」后，触屏点按恢复正常工作。
+
+**产品代码已改**：`hle_hid.c` 的 `GetMouseStates` **默认返回 0 条**（真机语义），
+只有 `DM_MOUSE=1` 才恢复旧行为（留作对照/调试）。`GetTouchScreenStates` / 手柄 / 键盘不受影响。
+
+### 待验证（下一轮）
+1. 从标题进入「新游戏」，走到开场对白/酒吧场景（点按推进）；
+2. 重打无签名 ipa（把该修复带进交付物）并更新 README；
+3. 用汉化补丁版 game.win 再跑一遍（中文 UI + 可交互）。

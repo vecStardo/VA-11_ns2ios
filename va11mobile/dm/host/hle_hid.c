@@ -612,6 +612,20 @@ static void mouse_fill(MouseStateV *s, int *first) {
 }
 HLE_FORCE("_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi", "VA-11：鼠标状态 ← 触屏面（点选玩法要能点）", int32_t, h_hid_GetMouse, void *out, int32_t n) {
     if (!out || n < 1) return 0;
+    // DM_NO_MOUSE=1（对照实验）：真机 Switch 没有鼠标设备，官方 runner 看到的 GetMouseStates 永远是 0 条。
+    // 我们一直伪造「已连接鼠标」，可能让 runner 走鼠标路径并遮蔽触屏→device_mouse 的合成路径。
+    // 这个开关按真机语义返回 0 条，用来验证上述假设。
+    // DM_NO_MOUSE=1 (control experiment): a real Switch has no mouse device, so the official runner always sees 0
+    // mouse states. We have been faking a connected mouse, which may make the runner take the mouse path and shadow
+    // the touchscreen -> device_mouse synthesis. This switch returns 0 states like real hardware to test that.
+    // 默认按真机语义返回 0 条（Switch 没有鼠标设备）；DM_MOUSE=1 才把触屏合成的鼠标报出去（旧行为，留作对照）。
+    // 实测（2026-10-18）：报出鼠标会让官方 runner 走鼠标路径、把触屏输入吃掉——标题永远停住；
+    // 改成 0 条后点按立刻进入游戏 UI（LOAD/读档界面），触摸→device_mouse 的合成恢复正常。
+    // Default to 0 states like real hardware (a Switch has no mouse device); DM_MOUSE=1 restores the old behaviour
+    // (report the touch-synthesised mouse) for comparison. Measured 2026-10-18: reporting a mouse made the official
+    // runner take the mouse path and swallow touch input -- the title never advanced; with 0 states a tap goes straight
+    // into the game UI (LOAD screen) and touch -> device_mouse synthesis works again.
+    { static int mouse_on = -1; if (mouse_on < 0) { const char *e = getenv("DM_MOUSE"); mouse_on = (e && *e) ? 1 : 0; } if (!mouse_on) return 0; }
     MouseStateV *v = (MouseStateV *)out; int first = 1;
     for (int32_t i = 0; i < n; i++) mouse_fill(&v[i], &first);
     return n;   // 鼠标是「每拍都有状态」的设备，给满 n 份 | a mouse has a state every sample, so fill all n entries
