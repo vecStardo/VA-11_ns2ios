@@ -25,8 +25,10 @@
 ## 禁止提交的内容
 
 - `.loopx/`、`.codex/` 下的本地状态与私有证据（已在 `.gitignore`，不要 `git add -f`）。
-- 构建产物：`Gen/`、`out/`、`*.dSYM`、`dm/host/dmhost_m3`。
-- 游戏本体资源 / 汉化补丁 / NSZ：`赛博朋克酒保行动 Cyberpunk Bartender Action/`、`Resources/dm/`、`d2r-mobile/`。
+- 构建产物：`Gen/`、`work/out/`（默认出包目录已移到仓库外）、`*.dSYM`、`dm/host/dmhost_m3`。
+- 工作目录约定：`work/` 与本仓库同级（`VA11_WORK` 可改），游戏文件/密钥/改写产物/调试 dump 都在那里；
+  不要把游戏数据或密钥放进仓库根目录。
+- 游戏本体资源 / 汉化补丁 / NSZ：`work/game/`、`Resources/dm/`、`d2r-mobile/`。
 - 凭据、token、个人绝对路径、原始日志。
 
 ## 其它
