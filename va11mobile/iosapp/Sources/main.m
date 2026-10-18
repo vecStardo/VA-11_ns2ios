@@ -11,6 +11,7 @@
 // Graphics: the GM runner uses EGL + GLES and the host hooks EGL straight to EAGL (see dm/host/hle_egl_ios.m);
 // no Metal translation layer is involved.
 #import <UIKit/UIKit.h>
+#include <stdatomic.h>
 #import <QuartzCore/QuartzCore.h>
 #import <OpenGLES/EAGL.h>
 #import <OpenGLES/ES2/gl.h>
@@ -40,7 +41,8 @@ void hle_egl_set_view(void *view);    // hle_egl_ios.m
 // ---------- 全局 ----------
 static UIWindow *g_win;
 static UIView *g_root;                // 黑底容器，铺满屏幕 | black container filling the screen
-static UIView *g_view;                // EAGL 视图：bounds = 游戏分辨率、contentsScale = 1 | EAGL view: bounds = game resolution, contentsScale = 1
+static UIView *g_view;
+_Atomic uint64_t g_front_touch_ns;   // 前端最近一次收到真实的 UI 触摸的时刻（窗口级兜底手势用它判断是否重复） | time of the last real UI touch (the window-level fallback gesture uses it to avoid double handling)                // EAGL 视图：bounds = 游戏分辨率、contentsScale = 1 | EAGL view: bounds = game resolution, contentsScale = 1
 static CAEAGLLayer *g_layer;
 static char *g_arg[8];
 static int g_argc;
@@ -153,6 +155,10 @@ static uint64_t pad_mask_of(const char *nm);   // 键名→掩码（DM_TEST_* �
         ts[i].y = ny < 0 ? 0 : ny > 0.999f ? 0.999f : ny;
     }
     dm_touch_set(n ? ts : NULL, n);
+    // 诊断：记录前端收到的触点（首次 6 次 + 每 60 次一行），用来判断「真机触摸有没有到 App」。
+    // Diagnostic: log touches received by the front end (first 6 + one per 60) to tell whether a real touch reaches the app at all.
+    extern _Atomic uint64_t g_front_touch_ns; atomic_store(&g_front_touch_ns, now_ns());
+    { static int cnt; int c = ++cnt; if (c <= 6 || (c % 60) == 0) LOG("[front] 触摸推 %d 点 #0=(%.3f,%.3f) 视图=%.0fx%.0f 第 %d 次", n, n ? ts[0].x : -1.0f, n ? ts[0].y : -1.0f, (double)w, (double)h, c); }
     // 触屏优先：按下 = 鼠标点 + 内部补两拍 A（不等抬手、也不看按住时长——鼠标按住超过 0.35 s 也算点按）。
     // Touch-first: a press = mouse click + two internal A pulses (no release/hold-duration gate: holding the mouse for
     // longer than 0.35 s still counts as a tap).
@@ -389,6 +395,9 @@ static void step_schedule(void) {
             else if (strcmp(op, "key") == 0) { uint64_t m = pad_mask_of(arg); if (m) { pad_press(m); usleep(120000); pad_release(m); } }
             // kbd:<HID 键码>[,按住毫秒]：键盘注入（HID usage，40=Return、44=Space、82=Up、81=Down、80=Left、79=Right）
             // kbd:<HID usage>[,hold ms]: keyboard injection (HID usage; 40=Return, 44=Space, 82=Up, 81=Down, 80=Left, 79=Right)
+            // stick:<lx>,<ly>[,毫秒]：推左摇杆（±32767），用于试「摇杆导航」的菜单
+            // stick:<lx>,<ly>[,ms]: push the left stick (+-32767), for testing stick-driven menus
+            else if (strcmp(op, "stick") == 0) { int lx = 0, ly = 0, ms = 400; if (sscanf(arg, "%d,%d,%d", &lx, &ly, &ms) >= 2) { extern void dm_pad_set(uint64_t, int32_t, int32_t, int32_t, int32_t); LOG("[test] 步:摇杆 (%d,%d) 保持 %d ms", lx, ly, ms); dm_pad_set(0, lx, ly, 0, 0); usleep((useconds_t)ms * 1000); dm_pad_set(0, 0, 0, 0, 0); } }
             else if (strcmp(op, "kbd") == 0) { int code = 0, ms = 150; if (sscanf(arg, "%d,%d", &code, &ms) >= 1) { LOG("[test] 步:键盘 0x%02x 按住 %d ms", code, ms); dm_kbd_press(code, ms); } }
             else LOG("[test] 步:未知 %s", t);
         }
@@ -484,9 +493,27 @@ static void start_boot(void) {
 @interface Va11AppDelegate : UIResponder <UIApplicationDelegate>
 @property(strong) UIWindow *window;
 - (void)layoutGame;
+- (void)onWindowTap:(UITapGestureRecognizer *)g;
 @end
 
 @implementation Va11AppDelegate
+// 窗口级兜底手势的处理：把触点换算成画面归一化坐标后注入（与手指路径一致），300 ms 内视图已收到就跳过。
+// Handler for the window-level fallback gesture: normalise the point and inject through the same path as a finger,
+// skipping when the view already received a real touch within 300 ms.
+- (void)onWindowTap:(UITapGestureRecognizer *)g {
+    extern _Atomic uint64_t g_front_touch_ns;
+    uint64_t last = atomic_load(&g_front_touch_ns);
+    if (last && now_ns() - last < 300000000ull) return;   // 视图已经收到真实触摸，不重复 | the view already got the real touch: skip
+    CGPoint p = [g locationInView:g_view];
+    CGFloat w = g_view.bounds.size.width, h = g_view.bounds.size.height;
+    float nx = w > 0 ? (float)(p.x / w) : 0.5f, ny = h > 0 ? (float)(p.y / h) : 0.5f;
+    nx = nx < 0 ? 0 : nx > 0.999f ? 0.999f : nx; ny = ny < 0 ? 0 : ny > 0.999f ? 0.999f : ny;
+    LOG("[front] 窗口手势兜底 (%.3f,%.3f)", nx, ny);
+    dm_touch td = {0, nx, ny};
+    dm_touch_set(&td, 1); usleep(140000); dm_touch_set(NULL, 0);
+    tap_a_pulse_at(nx, ny);
+}
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     (void)application; (void)launchOptions;
     g_win = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
@@ -512,6 +539,14 @@ static void start_boot(void) {
     [self layoutGame];
     hle_egl_set_view((__bridge void *)g_view);
     { int hle_egl_prepare_on_main(void); hle_egl_prepare_on_main(); }   // 主线程建上下文与画布（见 hle_egl_ios.m） | build the context and canvas on the main thread (see hle_egl_ios.m)
+    // 窗口级兜底：某些侧载器（LiveContainer 等）把触摸事件留在自己的窗口层，GL 视图收不到。
+    // 在窗口上挂一个 tap 手势，把触点按视图坐标归一化后走同一条注入路径；300 ms 内视图已收到真实触点就跳过（不重复）。
+    // Window-level fallback: some sideloaders (LiveContainer and friends) keep touches on their own window layer so the
+    // GL view never sees them. A tap gesture on the window normalises the point the same way and injects through the same
+    // path; if the view already saw a real touch within 300 ms the gesture is skipped (no double handling).
+    { UITapGestureRecognizer *tg = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onWindowTap:)];
+      tg.cancelsTouchesInView = NO; tg.delaysTouchesEnded = NO;
+      [g_win addGestureRecognizer:tg]; }
     if (getenv("DM_VIRTUAL_PAD")) [self buildTouchControls];   // 手柄键只作诊断/对照，缺省不显示（触屏点击是主输入） | gamepad buttons are diagnostics/comparison only, hidden by default (touch clicks are the primary input)
     LOG("[front] EAGL 视图就绪（%dx%d 逻辑）", kGameW, kGameH);
 
