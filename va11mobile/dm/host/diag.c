@@ -459,35 +459,17 @@ static void setlang_obs(const uint64_t *regs) {
 // pthread's register and differs from our emulated TLR, so the argument stack does not line up. Writing TPIDRRO_EL0
 // from user space is illegal on Apple (measured SIGILL), so instead replace every `mrs Rt, tpidrro_el0` with
 // `b trampoline_Rt`, where the trampoline puts the emulated TLR pointer into Rt and jumps back.
-uint64_t g_va11_tlr_current;      // 当前线程的模拟 TLR（trampoline 从这里读） | emulated TLR of the current thread
-static void *g_va11_tramp_page;
+uint64_t g_va11_tlr_current;      // 当前线程的模拟 TLR（保留，便于诊断） | emulated TLR of the current thread (kept for diagnostics)
 static int g_va11_tls_redirected;
-static void dm_emit32(uint8_t **p, uint32_t w) { memcpy(*p, &w, 4); *p += 4; }
-static uint32_t dm_branch(uint64_t from, uint64_t to) { return 0x14000000u | ((((int64_t)(to - from)) >> 2) & 0x3FFFFFFu); }
-// 生成 Rt 专用 trampoline：adrp/add 取 &g_va11_tlr_current → ldr → mov Rt,x9 → b back
-// Emit the trampoline for one Rt: adrp/add of &g_va11_tlr_current -> ldr -> mov Rt,x9 -> b back
-static uint64_t dm_make_tramp(uint8_t *page, int Rt, uint64_t back) {
-    uint8_t *p = page;
-    uint64_t g = (uint64_t)(uintptr_t)&g_va11_tlr_current, pc = (uint64_t)(uintptr_t)page;
-    int64_t delta = ((int64_t)(g & ~0xFFFull) - (int64_t)(pc & ~0xFFFull)) >> 12;
-    uint32_t immlo = (uint32_t)(delta & 3), immhi = (uint32_t)((delta >> 2) & 0x7FFFF);
-    // 暂存/恢复 x9：trampoline 只能用 x9 当临时寄存器，改之前必须先保存，否则会破坏调用点仍在用的值。
-    // Save/restore x9: the trampoline can only use x9 as scratch and must preserve it, or it clobbers a live value.
-    dm_emit32(&p, 0xD10043FFu);                                   // sub  sp, sp, #0x10
-    dm_emit32(&p, 0xF90003E9u);                                   // str  x9, [sp]
-    dm_emit32(&p, 0x90000000u | (immlo << 29) | (immhi << 5) | 9);// adrp x9, page(&g_va11_tlr_current)
-    dm_emit32(&p, 0x91000000u | ((uint32_t)(g & 0xFFF) << 10) | (9 << 5) | 9);  // add x9, x9, #off
-    dm_emit32(&p, 0xF9400000u | (9 << 5) | 9);                    // ldr  x9, [x9]
-    dm_emit32(&p, 0xAA0903E0u | (uint32_t)Rt);                    // mov  Rt, x9
-    dm_emit32(&p, 0xF94003E9u);                                   // ldr  x9, [sp]
-    dm_emit32(&p, 0x910043FFu);                                   // add  sp, sp, #0x10
-    dm_emit32(&p, dm_branch((uint64_t)(uintptr_t)p, back));       // b    back
-    return (uint64_t)(uintptr_t)page;
-}
-// 扫描 guest 地址空间里的 RX 段，找出 `mrs Rt, tpidrro_el0` 全部改写；返回改写条数。
-// Scan the guest address space for RX regions, rewrite every `mrs Rt, tpidrro_el0`; returns how many were rewritten.
+static uint32_t dm_rd32(const uint8_t *p) { uint32_t w; memcpy(&w, p, 4); return w; }
+// 原地改写：`mrs Rt, tpidrro_el0`(0xD53BD060|Rt) → `mrs Rt, tpidr_el0`(0xD53BD040|Rt)。
+// 前提：thread.c 在每条客体线程上把 TPIDR_EL0 设成了模拟 TLR（实测 macOS 上 msr tpidr_el0 可写、不崩）。
+// 这样游戏自己未改写的代码也会读到我们的 TLR，不需要 trampoline、不需要额外寄存器、没有 ±128MB 距离问题。
+// In-place rewrite: `mrs Rt, tpidrro_el0` (0xD53BD060|Rt) -> `mrs Rt, tpidr_el0` (0xD53BD040|Rt). Premise: thread.c sets
+// TPIDR_EL0 to the emulated TLR on every guest thread (measured on macOS: msr tpidr_el0 is writable and does not trap).
+// The game's unrewritten code then reads our TLR too -- no trampoline, no scratch register, no +/-128MB range issue.
 int dm_tls_redirect_all(uint64_t tlr) {
-    { const char *e = getenv("DM_TLS_REDIRECT"); if (!e || !*e) return 0; }   // 实验开关：默认关闭，不影响正常产物 | experimental, off by default
+    { const char *e = getenv("DM_TLS_REDIRECT"); if (!e || !*e) return 0; }   // 实验开关：默认关闭 | experimental, off by default
     if (g_va11_tls_redirected) return 0;
     g_va11_tls_redirected = 1;
     g_va11_tlr_current = tlr;
@@ -501,68 +483,54 @@ int dm_tls_redirect_all(uint64_t tlr) {
         if (kr != KERN_SUCCESS) break;
         a = ra + sz;
         if (!(info.protection & VM_PROT_EXECUTE) || sz < 0x1000 || sz > (256u << 20)) continue;
-        // 用 vm_read_overwrite 分块读（直接解引用可能碰到未映射页 → SIGBUS），再统计桩点。
-        // Read in chunks with vm_read_overwrite (dereferencing may hit an unmapped page -> SIGBUS), then count the sites.
+        // 跳过我们自己的模块（main/sdk/subsdk*）：它们由改写器处理、且 SDK 用自己的线程对象，
+        // 统一指到 TLR 会让 SDK 的临界区读错对象（实测崩溃）。只改「游戏自己载入的代码」。
+        // Skip our own modules (main/sdk/subsdk*): the rewriter handles them and the SDK keeps its own thread object;
+        // pointing them at the TLR makes SDK critical sections read the wrong object (measured crash). Only patch the
+        // code the game itself loads.
+        { int own = 0;
+          for (int mi = 0; mi < MAX_MOD; mi++) {
+              uint64_t mb = (uint64_t)(uintptr_t)g_mod[mi].base, ms = g_mod[mi].size;
+              if (!mb || !ms) continue;
+              if (ra < mb + ms && mb < ra + sz) { own = 1; break; }
+          }
+          if (own) continue; }
         uint8_t *buf = malloc(sz);
         if (!buf) continue;
         vm_size_t got = 0;
         if (vm_read_overwrite(mach_task_self(), (vm_address_t)ra, sz, (vm_address_t)buf, &got) != KERN_SUCCESS) { free(buf); continue; }
-        int hits = 0;
-        for (uint64_t off = 0; off + 4 <= got; off += 4) { uint32_t w; memcpy(&w, buf + off, 4); if ((w & 0xFFFFFFE0u) == 0xD53BD060u) hits++; }
-        if (!hits) { free(buf); continue; }
-        // 每区域单独分配 trampoline 页，尽量贴近该区域（B 只能跳 ±128MB）。
-        // Allocate one trampoline page per region, as close to it as possible (B reaches only +/-128MB).
-        uint8_t *tp = NULL;
-        uint64_t cand[3] = { (ra + got + 0xFFFF) & ~(uint64_t)0xFFFF, (ra > 0x200000 ? (ra - 0x200000) & ~(uint64_t)0xFFFF : 0), 0 };
-        for (int ci = 0; ci < 3 && !tp; ci++) {
-            if (!cand[ci]) continue;
-            void *m = mmap((void *)(uintptr_t)cand[ci], 0x4000, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-            if (m == MAP_FAILED) continue;
-            int64_t dd = (int64_t)(uintptr_t)m - (int64_t)ra;
-            if (dd > -(120 << 20) && dd < (120 << 20)) tp = m; else munmap(m, 0x4000);
-        }
-        if (!tp) { LOG("[va11] TLS 重定向：区域 %p 附近分配不到 trampoline 页，跳过（%d 处）", (void *)(uintptr_t)ra, hits); free(buf); continue; }
-        uint64_t tramps[32]; memset(tramps, 0, sizeof tramps);
-        int patched = 0, skipped = 0;
+        int hits = 0, patched = 0, skipped = 0;
         uint64_t dirty_lo = ~0ull, dirty_hi = 0;
-        for (uint64_t off = 0; off + 4 <= got; off += 4) {
-            uint32_t w; memcpy(&w, buf + off, 4);
+        for (uint64_t off = 0; off + 12 <= got; off += 4) {
+            uint32_t w = dm_rd32(buf + off);
             if ((w & 0xFFFFFFE0u) != 0xD53BD060u) continue;
-            if (off + 12 > got) continue;
-            uint32_t w2, w3; memcpy(&w2, buf + off + 4, 4); memcpy(&w3, buf + off + 8, 4);
-            // 真代码序列：mrs Rt,tpidrro_el0 ; adrp x?,#page ; ldr x?,[x?]（数据里碰巧同字的不在此列）
-            // Real code sequence: mrs Rt,tpidrro_el0 ; adrp ; ldr. Coincidental data words are filtered out here.
-            if ((w2 & 0x9F000000u) != 0x90000000u) continue;
-            if ((w3 & 0xFFC00000u) != 0xF9400000u) continue;
-            int Rt = (int)(w & 0x1F);
-            uint64_t site = ra + off, back = site + 4;
-            if (!tramps[Rt]) tramps[Rt] = dm_make_tramp(tp + 0x30 * Rt, Rt, back);
-            int64_t d = (int64_t)tramps[Rt] - (int64_t)site;
-            if (d < -(128 << 20) || d > (128 << 20)) { skipped++; continue; }
-            uint32_t nb = dm_branch(site, tramps[Rt]);
+            uint32_t w2 = dm_rd32(buf + off + 4), w3 = dm_rd32(buf + off + 8);
+            // 真代码序列过滤：mrs Rt,tpidrro_el0 ; adrp ; ldr（数据里碰巧相同的字不改）
+            if ((w2 & 0x9F000000u) != 0x90000000u || (w3 & 0xFFC00000u) != 0xF9400000u) { hits++; skipped++; continue; }
+            hits++;
+            uint32_t nb = 0xD53BD040u | (w & 0x1Fu);       // 只把 op2 从 3 改成 2：tpidrro_el0 → tpidr_el0
             memcpy(buf + off, &nb, 4);
             patched++;
-            if (site < dirty_lo) dirty_lo = site;
-            if (site > dirty_hi) dirty_hi = site;
+            if (ra + off < dirty_lo) dirty_lo = ra + off;
+            if (ra + off > dirty_hi) dirty_hi = ra + off;
         }
         if (patched) {
             uint64_t lo = dirty_lo & ~(uint64_t)0xFFF, hi = (dirty_hi + 0x1000) & ~(uint64_t)0xFFF;
             if (mprotect((void *)(uintptr_t)lo, (size_t)(hi - lo), PROT_READ | PROT_WRITE) == 0) {
-                kern_return_t wk = mach_vm_write(mach_task_self(), (vm_address_t)lo, (vm_address_t)(buf + (lo - ra)), (mach_msg_type_number_t)(hi - lo));
+                mach_vm_write(mach_task_self(), (vm_address_t)lo, (vm_address_t)(buf + (lo - ra)), (mach_msg_type_number_t)(hi - lo));
                 mprotect((void *)(uintptr_t)lo, (size_t)(hi - lo), PROT_READ | PROT_EXEC);
                 sys_icache_invalidate((void *)(uintptr_t)lo, (size_t)(hi - lo));
-                if (wk != KERN_SUCCESS) LOG("[va11] TLS 重定向：写回失败 kr=%d", (int)wk);
             }
         }
-        mprotect(tp, 0x4000, PROT_READ | PROT_EXEC);
-        sys_icache_invalidate(tp, 0x4000);
-        LOG("[va11] TLS 重定向：区域 %p+%#llx 命中 %d 处，改写 %d，跳过 %d", (void *)(uintptr_t)ra, (unsigned long long)got, hits, patched, skipped);
+        if (hits) LOG("[va11] TLS 原地改写：区域 %p+%#llx 命中 %d，改写 %d，跳过 %d", (void *)(uintptr_t)ra, (unsigned long long)got, hits, patched, skipped);
         total += patched;
         free(buf);
     }
-    LOG("[va11] TLS 重定向完成：共改写 %d 处", total);
+    LOG("[va11] TLS 原地改写完成：共 %d 处", total);
     return total;
 }
+
+
 #endif
 #if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>

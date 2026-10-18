@@ -55,6 +55,11 @@ void guest_thread_init(void) {
     // Experiment (DM_SET_TPIDRRO=1): point the real TPIDRRO_EL0 at our emulated TLR. The game's own compiled code
     // (unrewritten) reaches GM's per-thread state via `mrs xN, tpidrro_el0` + offset (very likely the argument stack);
     // only when it points at the same block do the unrewritten game code and our rewritten modules share that state.
+    // 把**可写的 TPIDR_EL0** 设成模拟 TLR：这样游戏自己未改写的代码（`mrs xN, tpidrro_el0` 被我们原地改成
+    // `mrs xN, tpidr_el0`）也读到我们的 TLR，与改写后的模块共享同一份 GM 线程状态。
+    // Point the writable TPIDR_EL0 at the emulated TLR: the game's own unrewritten code (whose `mrs xN, tpidrro_el0` we
+    // rewrite in place to `mrs xN, tpidr_el0`) then reads our TLR too and shares GM's per-thread state with our modules.
+    { const char *e = getenv("DM_TLS_REDIRECT"); if (e && *e) __asm__ volatile("msr tpidr_el0, %0" :: "r"((uint64_t)(uintptr_t)tlr)); }
     { const char *e = getenv("DM_SET_TPIDRRO");
       if (e && *e) { uint64_t tp = 0; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp)); };
       if (e && *e) { __asm__ volatile("msr tpidrro_el0, %0" :: "r"((uint64_t)(uintptr_t)tlr)); } }
