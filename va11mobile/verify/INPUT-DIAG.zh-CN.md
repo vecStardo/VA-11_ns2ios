@@ -2298,3 +2298,32 @@ ini_close()
 1. 扫全脚本里所有 `variable_global_set` 的**名字构造**（常见 `"demo"` 可能是 `"de" + xxx` 拼接），确认谁写它；
 2. 若确实没人写，则说明这个全局由**平台层**（Switch 的 "demo/试用版" 标志）提供 —— 那我们移植里要给它一个默认值，
    这可能就是 day0 一直失败的最后一环。
+
+## 台词文本的来源：另一条「异步/文件加载」支路（2026-10-19 15:2x）
+
+追 `dialog_files_texts` 的填充流程，发现台词文本不是写在脚本里的常量，而是**运行时加载**进来的：
+
+- `gml_Object_async_init_Create_0`：`dialog_files_texts = ds_map_create()`，然后把
+  「文件名列表」（`ds_list_add` 里加的是 `anna` / `pro1` / `pro2` / `pro3` 这些全局）准备好，
+  并初始化 `cur_ind` / `loading` / `loadid` 等状态；
+- `gml_Object_async_init_Other_72`（异步完成事件）：
+  `ds_map_set(dialog_files_texts, ds_list_find_value(list, cur_ind), buffer_read(...))`
+  —— 把**加载到的 buffer 内容**存进 map，键是列表里的文件名；
+- `gml_Object_async_init_Step_0`：驱动加载，核心是
+  ```
+  buffer_create(...)
+  buffer_async_group_begin("max_right_blocked_time")
+  buffer_load_async(loadbuff, 0, -1, ds_list_find_value(list, cur_ind))
+  loadid = buffer_async_group_end()
+  ```
+  而且这段外面有 `if (os_type == 21 || os_type == 14) …` 的平台判断（PS4/其他主机专用分支）。
+
+对照我们的运行日志：**启动至今没有任何一次台词文件被打开**（连 open 都没有），
+说明这条加载链在我们端口里**根本没有执行到 fs 层**。
+
+### 结论与需要确认的点
+1. 台词文本来自**文件**（`anna.txt` / `pro1.txt` / … 这类名字在数据里确实存在：
+   `anna.txt`@0xb8aa29、`pro1.txt`@0xb8a9d2，`day0`@0xb4b840）；
+2. 我们的端口没有任何这些文件，加载链也没触发 → `dialog_files_texts` 为空 →
+   `textbox_loadbox` 拿不到 INI 文本 → `input_text` 永不赋值 → day0 黑屏；
+3. 需要确认：Switch 版这些 `.txt` 是否在 **romfs** 里（我们此前 NSP 的 romfs 因缺 title key 未能解出）。
