@@ -540,9 +540,12 @@ static void va11_array_obs(const uint64_t *regs) {
               uint32_t w; memcpy(&w, buf + i, 4);
               int is_stp_pre = ((w & 0xff8003ffu) == 0xa98003fdu) || ((w & 0xffff83ffu) == 0xa9a003fdu);
               int is_sub_sp = (w & 0xffc003ffu) == 0xd10003ffu;
+              // ret 边界法：向前扫到的第一个 `ret`（0xd65f03c0）之后就是某个函数的入口。
+              // 先按「最近的 ret + 4」定入口，比纯序言匹配可靠（loadbox 函数体很大、序言风格也不固定）。
+              // ret-boundary method: the word right after the first `ret` (0xd65f03c0) found scanning forward is a function
+              // entry; this is more reliable than prologue matching (loadbox is large and its prologue style varies).
+              if (w == 0xd65f03c0u) { best = ca - BACK + i + 4; break; }
               if ((is_stp_pre && (w & 0x00007c00u) != 0) || is_sub_sp) {
-                  // 跳过「TLS 间接调用桩」：它的第二条指令是 mrs x30, tpidrro_el0（字节 de d0 3b d5）。
-                  // Skip the TLS indirect-call stub: its second instruction is mrs x30, tpidrro_el0 (bytes de d0 3b d5).
                   int is_stub = (i + 8 <= BACK) && buf[i + 4] == 0x7e && buf[i + 5] == 0xd0 && buf[i + 6] == 0x3b && buf[i + 7] == 0xd5;
                   if (is_stub) continue;
                   best = ca - BACK + i; break;
