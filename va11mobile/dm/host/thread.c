@@ -44,5 +44,13 @@ void guest_thread_init(void) {
     void **own = calloc(2, sizeof *own); uint8_t *tlr = calloc(1, TLR_SIZE + THREAD_OBJ_SIZE);
     own[0] = calloc(1, TLS_SIZE); own[1] = tlr;
     *(void **)(tlr + 0x1f8) = tlr + TLR_SIZE;               // 当前线程对象 | current thread object
-    pthread_once(&g_keyown_once, own_key_init); pthread_setspecific(g_keytls, own[0]); pthread_setspecific(g_keytlr, tlr); pthread_setspecific(g_keyown, own);
+    pthread_once(&g_keyown_once, own_key_init); pthread_setspecific(g_keytls, own[0]);
+    // 实验（DM_SAME_TLS=1）：把 KTLR 槽设成「真实 TPIDRRO_EL0 的值」，让未改写的代码（运行时生成的桩表）与我们
+    // 改写后的模块看到同一块线程本地存储，验证「两套 TLS 世界」是不是实参丢失的原因。
+    // Experiment (DM_SAME_TLS=1): point the KTLR slot at the real TPIDRRO_EL0 value so unrewritten stub code and our
+    // rewritten modules share one thread-local area -- tests whether "two TLS worlds" is why arguments get lost.
+    { const char *e = getenv("DM_SAME_TLS");
+      if (e && *e) { uint64_t tp = 0; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp)); pthread_setspecific(g_keytlr, (void *)(uintptr_t)tp); }
+      else pthread_setspecific(g_keytlr, tlr); }
+    pthread_setspecific(g_keyown, own);
 }

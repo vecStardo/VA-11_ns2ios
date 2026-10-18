@@ -563,6 +563,9 @@ static void va11_array_obs(const uint64_t *regs) {
     }
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
     dm_log_tlr("失败时");
+    { extern pthread_key_t g_keytlr; uint64_t tp = 0; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
+      void *our = pthread_getspecific(g_keytlr);
+      LOG("[va11] TPIDRRO_EL0=%p（宿主 pthread 的） vs 我们的 TLR=%p%s", (void *)(uintptr_t)tp, our, tp == (uint64_t)(uintptr_t)our ? "（相同）" : "（**不同**：未改写的代码读的是宿主 TLS）"); }
     dm_array_fail_hook();                       // 调试器断点处（lldb: breakpoint set -n dm_array_fail_hook）
 #if !TARGET_OS_IPHONE
     { void dm_log_regions(uint64_t, uint64_t); dm_log_regions(regs[30] & ~(uint64_t)0xFFFFF, 4u << 20); }
