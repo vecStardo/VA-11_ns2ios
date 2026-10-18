@@ -318,6 +318,13 @@ void dm_kbd_press(int code, int ms);   // hle_hid.c：键盘注入（VA-11 runne
 static void tap_a_pulse(void) { tap_a_pulse_at(0.5f, 0.5f); }
 
 static void tap_a_pulse_at(float nx, float ny) {
+    // DM_NO_TAP_A=1（验收用）：点按不再补 A / Enter / Space / 帧同步点击。
+    // 菜单是鼠标驱动时，补 A 会顺手选中默认项（实测：单次点按会直接进「读取」页），
+    // 做点位验收时必须让「点按 = 只推触点���。
+    // DM_NO_TAP_A=1 (acceptance only): a tap no longer pulses A / Enter / Space / the frame-synced click.
+    // Menus are mouse-driven here; the extra A silently selects the default item (measured: a single tap jumps
+    // straight to the Load page), so position acceptance needs "tap = touch only".
+    { static int noa = -1; if (noa < 0) { const char *e = getenv("DM_NO_TAP_A"); noa = (e && *e) ? 1 : 0; } if (noa) { LOG("[test] 点按：DM_NO_TAP_A，不补 A"); return; } }
     // 抬手之后才补 A：按住期间给 A 会被游戏丢掉（实测「按 A 键开始游戏」不动）；与按住时长无关。
     // Pulse A only after the touch is released: an A press while the finger/mouse is still down is dropped by the game
     // (observed on the "press A to start" screen); independent of how long the press was held.
