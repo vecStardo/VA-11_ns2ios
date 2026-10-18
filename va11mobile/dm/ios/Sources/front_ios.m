@@ -1408,7 +1408,16 @@ void front_ios_lifecycle_install(void) {
     if (NSProcessInfo.processInfo.thermalState >= NSProcessInfoThermalStateSerious) thermal_apply();   // 启动时已经热 | Already hot at launch
 
     AVAudioSession *as = AVAudioSession.sharedInstance; NSError *e = nil;
+    // 小 I/O 缓冲（5 ms / 48 kHz）：RemoteIO 默认按会话的 I/O 缓冲时长回调（约 21 ms / 1024 帧），
+    // 而游戏侧只维持约 20 ms 在飞 → 每次回调都差一点，被补零，表现为「声音撕裂/断续」。
+    // d2r / nxnative 的同类移植都用这个值；先设再 activate。
+    // Small I/O buffer (5 ms at 48 kHz): RemoteIO calls back with the session's I/O buffer duration (about 21 ms /
+    // 1024 frames by default) while the game keeps only ~20 ms in flight, so every callback comes up short and gets
+    // padded with zeros -- heard as crackling. The d2r / nxnative ports use this value; set it before activating.
+    [as setPreferredSampleRate:48000.0 error:nil];
+    [as setPreferredIOBufferDuration:0.005 error:nil];
     if (![as setCategory:AVAudioSessionCategoryPlayback error:&e] || ![as setActive:YES error:&e]) LOG("前端：音频会话设置失败 %s", e.localizedDescription.UTF8String);
+    LOG("前端：音频会话 采样率 %.0f Hz、I/O 缓冲 %.1f ms", as.sampleRate, as.IOBufferDuration * 1000.0);
     [nc addObserverForName:AVAudioSessionInterruptionNotification object:as queue:mq usingBlock:^(NSNotification *n) {
         AVAudioSessionInterruptionType t = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
         if (t == AVAudioSessionInterruptionTypeBegan) { LOG("前端：音频被打断"); g_audio_intr = 1; audio_apply(); return; }

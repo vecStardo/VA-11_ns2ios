@@ -933,3 +933,28 @@ gml_Object_dialog_control_Create_0
 ### 下一步（若仍黑屏）
 需要在 `textbox_loadbox` 失败点取证：要么在 HLE 里拦截并打印触发它的**输入状态**（鼠标按下/键盘/触屏），
 要么导出 `game.win` 里 `textbox_loadbox` 的 YYC 原生码反查它索引的全局数组来源。
+## 社区同类项目的做法与对本案的启示（2026-10-18 15:0x）
+
+用户提示：d2r 发布后有很多同类移植项目，应参考别人遇到的问题。检索结果：
+
+- **nxnative**（`seedds/nxnative`）：把 d2r-mobile 的通用部分（NSO 改写器 / Horizon HLE 宿主 / NVN→Metal / iOS 外壳）
+  抽出来做成「一个 NSP 文件夹 → 一个 ipa」的通用流水线，已跑通马力欧惊奇、火纹 Engage、密特罗德、十三机兵、
+  3D 世界、旷野之息、织梦岛。它的 `docs/agents/03-bringup.md` 是一份**故障目录**（症状 → 根因 → 修法）。
+- 该目录里与我们高度相关的几条：
+  1. **「IL2CPP 打不开 global-metadata.dat」→ 游戏先用 `nn::fs::IsMounted("rom")` 判断，SDK 自己的 IsMounted
+     读的是宿主从未填过的挂载表**；修法：宿主按自己的挂载表回答 IsMounted。**我们没有实现 IsMounted**，值得补齐；
+  2. 「文件找不到的噪声」：DM_FS=1 下大量 `fs … 不存在` 是游戏在探测可选路径，只有「缺失后紧接失败」才算问题；
+  3. **iOS 独有爆音**：RemoteIO 默认按会话 I/O 缓冲（约 21 ms / 1024 帧）回调，而渲染侧只维持约 20 ms 在飞，
+     每次回调差一点被补零 → 每秒几十次断口；修法是 `setPreferredIOBufferDuration:0.005` + 48 kHz。
+     **本轮已照此修掉**（`front_ios.m`），正好对上用户反馈的「声音撕裂」；
+  4. 「新标题先做静态普查：列出 main 的 nn:: 导入里没有任何宿主钩子命名的那些」→ 本轮写了
+     `tools/import_census.py` 做同样的事；
+  5. iOS 打包阶段：`env.txt` 支持运行期开关（免重打包改 DM_LANG 等）、日志 `log.txt`/`log.prev.txt` 约定。
+- 另一条 d2r-mobile 的 README 强调：**RomFS 要放进 app**（dm/ios 里带 RomFS）。我们的 VA-11 包目前只带 game.win，
+  若该作的台词/资源在 RomFS 里，这就是缺口（下一步核对）。
+
+### 本轮改动
+- `front_ios.m`：音频会话加 48 kHz + 5 ms 首选 I/O 缓冲（修 iOS 爆音/撕裂）；
+- `tools/import_census.py`：导入 vs 宿主钩子普查工具（找出没有任何宿主实现命名的 nn:: 导入）。
+
+新包：`Va11IOS-unsigned-20261018-1507-audiofix.ipa`（17,019,978 B，sha256 前 24 位 `36675623edbeb634379c419c`，0 项红）。
