@@ -852,3 +852,31 @@ Settings      ← 竖屏右上
 模拟器结果：仍进 SAVE/LOAD（`out/hp_41.png`）——说明模拟器里「A 确认的是手柄选择位」这条仍是硬的，
 落点按住不足以改变它。改动保留（对真机时序可能有效，待真机反馈），新包：
 `Va11IOS-unsigned-20261018-1546-holdpoint.ipa`（17,019,157 B，sha256 前 24 位 `699d70997620c624bfe1515f`，0 项红）。
+
+## 真机 boot 5.txt：黑屏就是汉化补丁的 textbox 报错（2026-10-18 15:0x）
+
+用户真机点 New Game 后黑屏（有声音、无点击反馈、画面/声音卡顿）。boot 5.txt 关键行：
+
+```
+[dm] [hid-read] 每秒读取 npad=28 touch=28 mouse=0 kbd=28      ← 前 28 秒一切正常
+ERROR in
+action number 1
+of Other Event: User Defined 0
+for object obj_textbox:
+trying to index a variable which is not an array
+at gml_Script_textbox_loadbox                                 ← 与模拟器 CN 补丁数据完全同一条错误
+（之后 hid-read 停止 = 主循环卡死，所以黑屏）
+```
+
+即：**真机当前用的仍是汉化补丁的 game.win**，所以复现了模拟器里同样的
+`textbox_loadbox` 错误 → 主循环停住 → 黑屏（但音频线程还在跑，所以有声音）。
+
+### 处理
+1. 把 `game.win` 换成 **原版英文**（iCloud `Va11IOS-data-EN/game.win`，sha256 `e860d56e…`）；
+2. 换完再点 New Game：模拟器上原版数据同流程 0 报错、能推进到开场/酒吧旁白；
+3. 中文要等「匹配 1.2.3.0 的补丁」或「换 1.0.1 本体」，当前补丁在这版本体上必崩。
+
+### 顺带记录：音频撕裂/卡顿
+真机反馈「画面和声音有迟钝、声音撕裂」。本轮先不处理——先把 textbox 报错解决，
+再在能正常进游戏后单独看音频（`audio::OpenAudioOut` 已正常打开、双声道真出声；
+撕裂可能与 LiveContainer 下的调度/缓冲有关，届时用 `DM_AUDIO_*` 诊断与缓冲加大试）。
