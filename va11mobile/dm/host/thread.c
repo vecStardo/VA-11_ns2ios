@@ -49,6 +49,15 @@ void guest_thread_init(void) {
     // 改写后的模块看到同一块线程本地存储，验证「两套 TLS 世界」是不是实参丢失的原因。
     // Experiment (DM_SAME_TLS=1): point the KTLR slot at the real TPIDRRO_EL0 value so unrewritten stub code and our
     // rewritten modules share one thread-local area -- tests whether "two TLS worlds" is why arguments get lost.
+    // 实验（DM_SET_TPIDRRO=1）：把**真实的 TPIDRRO_EL0** 指向我们模拟的 TLR。游戏自己的编译代码（未改写）
+    // 用 `mrs xN, tpidrro_el0` + 偏移来访问 GM 的线程状态（很可能就是参数栈），只有把它指到同一块，
+    // 未改写的游戏代码才会和我们改写的模块看到同一份线程状态。
+    // Experiment (DM_SET_TPIDRRO=1): point the real TPIDRRO_EL0 at our emulated TLR. The game's own compiled code
+    // (unrewritten) reaches GM's per-thread state via `mrs xN, tpidrro_el0` + offset (very likely the argument stack);
+    // only when it points at the same block do the unrewritten game code and our rewritten modules share that state.
+    { const char *e = getenv("DM_SET_TPIDRRO");
+      if (e && *e) { uint64_t tp = 0; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp)); };
+      if (e && *e) { __asm__ volatile("msr tpidrro_el0, %0" :: "r"((uint64_t)(uintptr_t)tlr)); } }
     { const char *e = getenv("DM_SAME_TLS");
       if (e && *e) { uint64_t tp = 0; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp)); pthread_setspecific(g_keytlr, (void *)(uintptr_t)tp); }
       else pthread_setspecific(g_keytlr, tlr); }

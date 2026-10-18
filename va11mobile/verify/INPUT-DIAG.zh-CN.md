@@ -1597,3 +1597,40 @@ CALLER-0x400 0x109d8e3c8 a0feffd0 000040f9 2100008b 200040f9 …
 1. 把 caller 前 0x2000 字节**写文件**（而不是打进日志，日志行会截断），离线用 capstone 找最近的
    `bl`/`blr` 序列与 x25 的写入点，定位「构造实参」的真实调用；
 2. 找到后用同样方式 dump 该函数入口 0x300 字节，判断它是「字符串/数组构造」「类型转换」还是「异常值构造」。
+
+## 根因基本锁定：游戏代码用真实 TLSPIDRRO 访问 GM 线程状态（2026-10-18 25:4x）
+
+把 caller 前 0x2000 字节落盘后离线反汇编，看到 caller 前面是一整片**同一个模式的重叠序列**：
+
+```
+stp x0, x1, [sp, #-0x10]
+mrs x1, tpidrro_el0
+adrp x0, #G ; ldr x0, [x0]
+add x1, x1, x0
+ldr x0, [x1]           ← 从「TLS + 偏移」取值
+...修改...
+str x0, [x1]           ← 写回同一处
+ldp x0, x1, [sp, #-0x10]
+b <下一段>
+```
+
+然后紧接 `mrs x30, tpidrro_el0 … blr x30`（TLS 跳转桩）→ 进入 loadbox。
+
+也就是说：**游戏自己的编译代码用 `mrs xN, tpidrro_el0` + 偏移来读写信程级的 GM 运行状态**
+（这些偏移来自 G 表，按 Horizon TLR 布局设计）。而我们的移植里：
+
+- 我们改写的模块（main/sdk…）读 tpidrro 已被换到宿主 TLS 槽 → 指向我们模拟的 TLR；
+- **游戏代码未改写** → 它读到的是**真实的 TPIDRRO_EL0 = 宿主 pthread TLS**（实测 0x1fef86320，与 TLR 不同）。
+
+两边看着不同的「线程状态」→ GM 的 **argument 栈/上下文对不上** → 实参丢失 → `argument[0]` 是未初始化填充值。这与我们此前所有观测吻合。
+
+### 直接改寄存器不可行（已实测）
+尝试 `msr tpidrro_el0, <我们的 TLR>`（`DM_SET_TPIDRRO=1`）→ **SIGILL（sig=4）**：
+Apple 用户态**不允许**写 TPIDRRO_EL0，这条路封死。
+
+### 下一轮：给游戏代码做「TLS 读取重定向」（真正的修法）
+1. 在游戏代码映射（我们自己 mmap 出来的匿名内存）里扫描 `mrs Rt, tpidrro_el0`（编码 `0xd53bd0XX`，低 5 位 = Rt）；
+2. 把每条替换成 `b <trampoline_Rt>`（±128MB 内），trampoline 用 `movz/movk` 把**我们模拟的 TLR 指针**写进 Rt，
+   再 `b` 回原地址+4；
+3. 先 mprotect 成可写、patch 完再改回 RX 并 `sys_icache_invalidate`；
+4. 这条修法同时覆盖「桩表」和「GM 线程状态访问」两处，若成立，day0 的实参丢失应当消失。

@@ -571,6 +571,15 @@ static void va11_array_obs(const uint64_t *regs) {
     // 解码它的 imm26 得到目标地址，再把目标函数前 0x300 字节 dump 出来，离线反汇编看它到底是干什么的。
     // Locate and dump the runtime function that builds the argument: caller-0x30c holds a bl (found in the earlier dump);
     // decode its imm26 to get the target and dump the first 0x300 bytes of that function for offline disassembly.
+    { // 把 caller 前 0x2000 字节写到文件（日志行会截断，只能落盘）：离线用 capstone 找最近的 bl/blr 与 x25 的写入点。
+      // Write the 0x2000 bytes before the caller to a file (log lines get truncated): offline, find the nearest bl/blr and
+      // where x25 is written.
+      const char *cp = getenv("DM_DUMPCALLER");
+      uint8_t wb[0x2000]; vm_size_t wg = 0;
+      if (cp && *cp && vm_read_overwrite(mach_task_self(), (vm_address_t)(regs[30] - 0x2000), sizeof wb, (vm_address_t)wb, &wg) == KERN_SUCCESS && wg == sizeof wb) {
+          FILE *f = fopen(cp, "wb");
+          if (f) { fwrite(wb, 1, sizeof wb, f); fclose(f); LOG("[va11] caller 窗口已 dump：%s（基址 %p）", cp, (void *)(uintptr_t)(regs[30] - 0x2000)); }
+      } }
     { // 先把 caller 前 0x400 字节按 4 行 hex 打出来，离线找最近的 bl（不同运行里调用点可能不同）。
       uint8_t wb[0x400]; vm_size_t wg = 0;
       if (vm_read_overwrite(mach_task_self(), (vm_address_t)(regs[30] - 0x400), sizeof wb, (vm_address_t)wb, &wg) == KERN_SUCCESS && wg == sizeof wb) {
