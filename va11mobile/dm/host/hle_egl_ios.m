@@ -121,19 +121,35 @@ HLE_FORCE("eglMakeCurrent", "VA-11 iOS：绑定上下文（并首次建 FBO）",
 // 渲染帧率统计：每 5 秒记一行（判「游戏跑太快/太慢」导致音频节奏异常）
 // Render FPS stats: one line every 5 s (to tell whether the game runs too fast/slow and wrecks audio pacing).
 static _Atomic uint64_t g_swap_frames;
+static _Atomic uint64_t g_last_swap_ns, g_swap_period_sum, g_swap_period_max;
+static _Atomic uint64_t g_present_sum, g_present_max;
 static void *fps_thread(void *p) {
     (void)p; uint64_t last = 0;
     for (;;) {
         sleep(5);
         uint64_t n = atomic_load_explicit(&g_swap_frames, memory_order_relaxed);
-        LOG("渲染统计：swap %llu 次 / 5 s（≈%.1f FPS）", (unsigned long long)(n - last), (double)(n - last) / 5.0);
+        uint64_t ps = atomic_exchange_explicit(&g_swap_period_sum, 0, memory_order_relaxed);
+        uint64_t pm = atomic_exchange_explicit(&g_swap_period_max, 0, memory_order_relaxed);
+        uint64_t cnt = n - last;
+        uint64_t prs = atomic_exchange_explicit(&g_present_sum, 0, memory_order_relaxed);
+        uint64_t prm = atomic_exchange_explicit(&g_present_max, 0, memory_order_relaxed);
+        LOG("渲染统计：swap %llu 次 / 5 s（≈%.1f FPS），帧间隔平均 %.1f ms、最大 %.1f ms，present 平均 %.1f ms、最大 %.1f ms",
+            (unsigned long long)cnt, (double)cnt / 5.0,
+            cnt ? (ps / 1e6) / (double)cnt : 0.0, pm / 1e6,
+            cnt ? (prs / 1e6) / (double)cnt : 0.0, prm / 1e6);
         last = n;
     }
     return NULL;
 }
 HLE_FORCE("eglSwapBuffers", "VA-11 iOS：出图 → presentRenderbuffer", EGLBoolean, h_egl_SwapBuffers, EGLDisplay d, EGLSurface s) {
     (void)d; (void)s;
-    { static int started; if (!started) { started = 1; pthread_t t; pthread_create(&t, NULL, fps_thread, NULL); } atomic_fetch_add_explicit(&g_swap_frames, 1, memory_order_relaxed); }
+    { static int started; if (!started) { started = 1; pthread_t t; pthread_create(&t, NULL, fps_thread, NULL); }
+      uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+      uint64_t last = atomic_load_explicit(&g_last_swap_ns, memory_order_relaxed);
+      if (last) { uint64_t d = now - last; atomic_fetch_add_explicit(&g_swap_period_sum, d, memory_order_relaxed);
+          uint64_t mx = atomic_load_explicit(&g_swap_period_max, memory_order_relaxed); while (d > mx && !atomic_compare_exchange_weak(&g_swap_period_max, &mx, d)) {} }
+      atomic_store_explicit(&g_last_swap_ns, now, memory_order_relaxed);
+      atomic_fetch_add_explicit(&g_swap_frames, 1, memory_order_relaxed); }
     if (!g_ctx || !ensure_target()) return 0;
     [EAGLContext setCurrentContext:g_ctx];
     glBindRenderbuffer(GL_RENDERBUFFER, g_rbo);
@@ -149,7 +165,12 @@ HLE_FORCE("eglSwapBuffers", "VA-11 iOS：出图 → presentRenderbuffer", EGLBoo
         unsigned sum = 0, sum2 = 0; for (unsigned i = 0; i < sizeof px; i++) { sum += px[i]; sum2 += px2[i]; }
         LOG("[glprobe] swap#%lld 画布 %dx%d 视口 %dx%d 绑定 FBO=%d 均值 %u 宿主 FBO 均值 %u", g_swapno, (int)g_glview.bounds.size.width, (int)g_glview.bounds.size.height, vp[2], vp[3], bound, sum, sum2);
     }
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
     BOOL ok = [g_ctx presentRenderbuffer:GL_RENDERBUFFER];
+    { uint64_t dt = clock_gettime_nsec_np(CLOCK_MONOTONIC) - t0;
+      atomic_fetch_add_explicit(&g_present_sum, dt, memory_order_relaxed);
+      uint64_t mx = atomic_load_explicit(&g_present_max, memory_order_relaxed);
+      while (dt > mx && !atomic_compare_exchange_weak(&g_present_max, &mx, dt)) {} }
     if (!ok) LOG("【红】[egl] presentRenderbuffer 失败");
     return ok ? 1 : 0;
 }
