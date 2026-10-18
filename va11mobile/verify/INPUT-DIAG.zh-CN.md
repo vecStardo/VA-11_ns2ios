@@ -880,3 +880,21 @@ at gml_Script_textbox_loadbox                                 ← 与模拟器 C
 真机反馈「画面和声音有迟钝、声音撕裂」。本轮先不处理——先把 textbox 报错解决，
 再在能正常进游戏后单独看音频（`audio::OpenAudioOut` 已正常打开、双声道真出声；
 撕裂可能与 LiveContainer 下的调度/缓冲有关，届时用 `DM_AUDIO_*` 诊断与缓冲加大试）。
+
+## 自动推进终于可靠（kbdrep）+ 原版数据清存档后 0 报错（2026-10-18 16:0x）
+
+**关键工具修正**：标题/对白只认**按下沿**，之前用「一直按住 Enter」只产生一次边沿，所以时好时坏。
+新增 `DM_TEST_STEP` 的 `kbdrep:<键码>,<次数>,<间隔ms>[,<按住ms>]`（连续按下-抬起），此后自动推进稳定：
+
+```
+at:22000;kbdrep:40,40,2500,180
+→ 80 s 时已在酒吧内景、英文旁白「…but that's a mouthful, so we just call it Valhalla.」（out/kr_80.png）
+→ 全程 0 条 GM 报错
+```
+
+**存档干净时的对照**：清空 `Documents/save/` 里除 `game.win` 以外的所有内容
+（`Settings/`、`Waifu Preferences.txt`、`preselected_user` 等），再用原版英文数据跑：
+0 报错、hid-read 连续 158 秒不停、游戏自己重建设置目录。
+
+→ 说明真机「英文标题 + 点 New Game 后黑屏」很可能不是版本不匹配，而是**上一次汉化版运行留下的存档/设置数据**
+被 1.2.3.0 读取时触发了 `textbox_loadbox`。**处理：清掉 save 目录里除 game.win 之外的所有东西再启动。**

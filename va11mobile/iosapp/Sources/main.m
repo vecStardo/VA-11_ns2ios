@@ -436,6 +436,17 @@ static void step_schedule(void) {
             else if (strcmp(op, "mclick") == 0) { float x = 0, y = 0; if (sscanf(arg, "%f,%f", &x, &y) == 2) { extern void dm_click_request(float, float); dm_mouse_hover(x, y); usleep(120000); dm_click_request(x, y); LOG("[test] 步:纯鼠标点击 (%.3f,%.3f)", x, y); } }
             else if (strcmp(op, "wintap") == 0) { float x = 0.5f, y = 0.5f; if (sscanf(arg, "%f,%f", &x, &y) == 2) { front_window_tap(x, y); } }
             else if (strcmp(op, "stick") == 0) { int lx = 0, ly = 0, ms = 400; if (sscanf(arg, "%d,%d,%d", &lx, &ly, &ms) >= 2) { extern void dm_pad_set(uint64_t, int32_t, int32_t, int32_t, int32_t); LOG("[test] 步:摇杆 (%d,%d) 保持 %d ms", lx, ly, ms); dm_pad_set(0, lx, ly, 0, 0); usleep((useconds_t)ms * 1000); dm_pad_set(0, 0, 0, 0, 0); } }
+            // kbdrep:<HID 键码>,<次数>,<间隔毫秒>[,<按住毫秒>]：连续「按下-抬起」多次（每次都是新的按下沿）
+            // 标题/对白只认**按下沿**，长按只产生一次边沿，所以自动推进要用这个。
+            // kbdrep:<HID usage>,<count>,<interval ms>[,<hold ms>]: repeat press-release cycles (each one a fresh press edge).
+            // The title/dialogue only react to press edges, so holding a key produces a single edge; automated advancing needs this.
+            else if (strcmp(op, "kbdrep") == 0) {
+                int code = 40, cnt = 4, gap = 1500, hold = 180;
+                if (sscanf(arg, "%d,%d,%d,%d", &code, &cnt, &gap, &hold) >= 3) {
+                    LOG("[test] 步:键盘连按 0x%02x ×%d 间隔 %d ms", code, cnt, gap);
+                    for (int i = 0; i < cnt; i++) { dm_kbd_press(code, hold); usleep((useconds_t)gap * 1000); }
+                }
+            }
             else if (strcmp(op, "kbd") == 0) { int code = 0, ms = 150; if (sscanf(arg, "%d,%d", &code, &ms) >= 1) { LOG("[test] 步:键盘 0x%02x 按住 %d ms", code, ms); dm_kbd_press(code, ms); } }
             else LOG("[test] 步:未知 %s", t);
         }
@@ -589,7 +600,12 @@ static void front_window_tap(float nx, float ny) {
     { UITapGestureRecognizer *tg = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onWindowTap:)];
       tg.cancelsTouchesInView = NO; tg.delaysTouchesEnded = NO;
       [g_win addGestureRecognizer:tg]; }
-    if (getenv("DM_VIRTUAL_PAD")) [self buildTouchControls];   // 手柄键只作诊断/对照，缺省不显示（触屏点击是主输入） | gamepad buttons are diagnostics/comparison only, hidden by default (touch clicks are the primary input)
+    // 虚拟手柄键缺省**显示**：VA-11 的菜单确认只认手柄 A 的当前选择位（触屏点位只能移动光标/高亮），
+    // 没有实体手柄时菜单就只能靠这组屏上键导航；DM_NO_VIRTUAL_PAD=1 可关掉（纯触屏验收用）。
+    // On-screen gamepad keys are shown by DEFAULT: VA-11's menu confirmation only accepts the gamepad A on the current
+    // selection (touch only moves the cursor/highlight), so without a physical controller these keys are the only way to
+    // drive the menu; DM_NO_VIRTUAL_PAD=1 hides them (pure-touch acceptance runs).
+    { const char *e = getenv("DM_NO_VIRTUAL_PAD"); if (!(e && *e)) [self buildTouchControls]; }
     LOG("[front] EAGL 视图就绪（%dx%d 逻辑）", kGameW, kGameH);
 
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
