@@ -340,41 +340,29 @@ void dm_kbd_press(int code, int ms);   // hle_hid.c：键盘注入（VA-11 runne
 static void tap_a_pulse(void) { tap_a_pulse_at(0.5f, 0.5f); }
 
 static void tap_a_pulse_at(float nx, float ny) {
-    // DM_NO_TAP_A=1（验收用）：点按不再补 A / Enter / Space / 帧同步点击。
-    // 菜单是鼠标驱动时，补 A 会顺手选中默认项（实测：单次点按会直接进「读取」页），
-    // 做点位验收时必须让「点按 = 只推触点���。
-    // DM_NO_TAP_A=1 (acceptance only): a tap no longer pulses A / Enter / Space / the frame-synced click.
-    // Menus are mouse-driven here; the extra A silently selects the default item (measured: a single tap jumps
-    // straight to the Load page), so position acceptance needs "tap = touch only".
-    { static int noa = -1; if (noa < 0) { const char *e = getenv("DM_NO_TAP_A"); noa = (e && *e) ? 1 : 0; } if (noa) { LOG("[test] 点按：DM_NO_TAP_A，不补 A"); return; } }
-    // 抬手之后才补 A：按住期间给 A 会被游戏丢掉（实测「按 A 键开始游戏」不动）；与按住时长无关。
-    // Pulse A only after the touch is released: an A press while the finger/mouse is still down is dropped by the game
-    // (observed on the "press A to start" screen); independent of how long the press was held.
-    // 6 拍 A（按下 120 ms、间隔 250 ms，共约 2 s）：标题提示会闪烁/存在状态窗口，单拍容易错过，连拍更稳。
-    // Six A pulses (120 ms down, 250 ms apart, ~2 s total): the title prompt blinks / has state windows, so a single pulse
-    // is easy to miss; a short burst is robust.
-    { extern void dm_click_request(float, float); dm_click_request(nx, ny); }   // 帧同步鼠标点击（菜单点选用真实落点）| frame-synced mouse click (real hit point for menu selection)
-    // 先让鼠标点击把菜单选择挪到落点，再补 A/Enter/Space：VA-11 的主菜单在收到 A 的同一拍会确认
-    // **手柄当前选择位**（默认「读取」），所以补键必须等点击生效（实测提前补键会直接进读档页）。
-    // Let the mouse click move the menu selection to the hit point before pulsing A/Enter/Space: on the same tick as an A
-    // press VA-11's main menu confirms the controller's *current* selection (Load by default), so the pulses must wait for
-    // the click to take effect (measured: pulsing early jumps straight to the Load page).
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        dm_kbd_press(0x28, 220);   // Enter（HID 0x28）：菜单/对话确认 | Enter (HID 0x28): menu/dialogue confirm
-        dm_kbd_press(0x2C, 220);   // Space（HID 0x2C）：推进对白 | Space (HID 0x2C): advance dialogue
-        // 2 拍 A、间隔 0.5 s：原 6 拍会把刚进入的场景/对白一次推进过多（实测连点会把读档页/对白跳过，
-        // 甚至在对白框创建前就把确认吃掉）。真实玩家一次点按也只期望一次确认。
-        // Two A pulses 0.5 s apart: the previous six-pulse burst over-advanced a freshly entered scene/dialogue (measured:
-        // rapid pulses skip the load page or get consumed before the textbox is created). A real tap only expects one confirm.
-        for (int k = 0; k < 2; k++) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.20 + 0.50 * k) * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                pad_press(DM_BTN_A);
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                    pad_release(DM_BTN_A);
-                });
+    // 点按 = 只推触点 + 帧同步鼠标点击：VA-11 在原版 Switch 上就是「触屏/鼠标点选」玩法，
+    // runner 会把触屏合成为 device_mouse，菜单与对白全部可以用手指点。
+    // 以前补 A / Enter / Space 是为了「按 A 键开始」这类只认手柄的提示，但连拍会在场景/对白框创建前后
+    // 把确认和状态吃掉（实测：点 New Game 后 day0 对话框创建报 textbox_loadbox 错误、黑屏）。
+    // 现在默认**只点不补键**；需要诊断「纯手柄确认」时用 DM_TAP_A=1 恢复旧行为。
+    // A tap is just the touch point plus a frame-synced mouse click: on the original Switch this game is point-and-click
+    // (the runner synthesises device_mouse from the touchscreen), so menus and dialogue are all finger-operable.
+    // The A/Enter/Space pulses existed for "press A to start"-style prompts, but a burst can eat the confirm and the state
+    // around scene/textbox creation (measured: after tapping New Game the day0 dialog creation threw textbox_loadbox and
+    // the screen went black). Default is now click-only; DM_TAP_A=1 restores the old pulses for diagnostics.
+    { extern void dm_click_request(float, float); dm_click_request(nx, ny); }
+    { static int tap_a = -1; if (tap_a < 0) { const char *e = getenv("DM_TAP_A"); tap_a = (e && *e) ? 1 : 0; }
+      if (!tap_a) return; }
+    dm_kbd_press(0x28, 220);   // Enter（HID 0x28）| Enter (HID 0x28)
+    dm_kbd_press(0x2C, 220);   // Space（HID 0x2C）| Space (HID 0x2C)
+    for (int k = 0; k < 2; k++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.20 + 0.50 * k) * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            pad_press(DM_BTN_A);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                pad_release(DM_BTN_A);
             });
-        }
-    });
+        });
+    }
 }
 
 // 诊断/验收：DM_TEST_STEP="at:<毫秒>;hover:x,y;wait:ms;click:x,y;tap;key:A;... "
@@ -590,12 +578,11 @@ static void front_window_tap(float nx, float ny) {
     { UITapGestureRecognizer *tg = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onWindowTap:)];
       tg.cancelsTouchesInView = NO; tg.delaysTouchesEnded = NO;
       [g_win addGestureRecognizer:tg]; }
-    // 虚拟手柄键缺省**显示**：VA-11 的菜单确认只认手柄 A 的当前选择位（触屏点位只能移动光标/高亮），
-    // 没有实体手柄时菜单就只能靠这组屏上键导航；DM_NO_VIRTUAL_PAD=1 可关掉（纯触屏验收用）。
-    // On-screen gamepad keys are shown by DEFAULT: VA-11's menu confirmation only accepts the gamepad A on the current
-    // selection (touch only moves the cursor/highlight), so without a physical controller these keys are the only way to
-    // drive the menu; DM_NO_VIRTUAL_PAD=1 hides them (pure-touch acceptance runs).
-    { const char *e = getenv("DM_NO_VIRTUAL_PAD"); if (!(e && *e)) [self buildTouchControls]; }
+    // 虚拟手柄键默认**不显示**：这个游戏在原版 Switch 上就是触屏点选玩法，手指能完成全部操作。
+    // DM_VIRTUAL_PAD=1 才显示（外接按键诊断 / 没有触摸的对照用）。
+    // On-screen gamepad keys are hidden by DEFAULT: on the original Switch this game is point-and-click and every action
+    // is finger-operable. DM_VIRTUAL_PAD=1 shows them (controller diagnostics / no-touch comparisons).
+    if (getenv("DM_VIRTUAL_PAD")) [self buildTouchControls];
     LOG("[front] EAGL 视图就绪（%dx%d 逻辑）", kGameW, kGameH);
 
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
