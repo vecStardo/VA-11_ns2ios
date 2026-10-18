@@ -352,3 +352,21 @@ cp ~/va11-work/orig/game.win <App 容器>/Documents/save/game.win      # 模拟�
 1. 对比「attract 中断」与「标题开始」两个分支在 GML 侧用什么函数（下一步需要反汇编/字符串定位）；
 2. 试 `DM_TEST_STEP` 在 attract 中断后再等 10 s 才按键（避免两次输入落在同一状态机里）；
 3. 若标题开始只用指针**点击特定区域**，需要用归一化坐标扫描标题上的可点区域（而非屏幕中心）。
+
+## 标题可点区域网格扫描（2026-10-18 11:0x）
+
+假设：`Tap or press A to start` 可能只认标题上某个特定可点区域，而中心点不在其中。
+做法：先等 20 s（attract），再沿 3 行 × 5 列（x=0.2/0.35/0.5/0.65/0.8，y=0.25/0.5/0.75）
+共 15 点逐点点按，每点间隔 2.2 s，行间截图（`out/grid_r1..r3.png`、`out/grid_end.png`）。
+
+结果：15 个点全部点过，画面仍在标题（英文 `Good Bye Miss Bartender 1.2.3.0 / Tap or press A to start`）。
+
+**推论**：标题「开始」不是「屏幕某个坐标的热区」能解决的问题；结合此前「全按键爆测」（A/B/X/Y/PLUS 全发）
+也无效，问题更可能在 **runner 把 hid 状态翻译成 GML 输入的映射层**（触摸→device_mouse、手柄位→GML
+gamepad 常量），而不是命中区或键位本身。
+
+### 下一步（范围较大，按投入排序）
+1. **反汇编官方 runner 的输入翻译层**：NSO 已剥符号，需要在 `main/sub sdk` 里定位读 `GetNpadState` /
+   `GetTouchScreenStates` 返回值之后的转换代码（按返回结构偏移特征搜索），确认它期望的 attributes/边沿语义；
+2. 或换一个**已知能被该 runner 正常驱动**的 GameMaker Switch 游戏做对照（可验证是通用映射问题还是本作特例）；
+3. 真机侧：在真机上跑同一份 HLE 构建并对比（真机触屏可用），确认是否 iOS 前端特有（如视图旋转/坐标轴）。
