@@ -2206,3 +2206,37 @@ input_text = ...        ← 唯一一处写入
 1. 找 `textbox_create` 的调用点（`day0control`/`dialog_control` 一带），确认它传入的 `file_name` 是 STRG 常量还是全局变量；
 2. 若传的是常量，则说明是**实参在调用边界丢失**（我们的移植问题），回到宿主/改写器层面查；
 3. 若传的是全局（例如 `global.current_script`），则查那个全局为何是 undefined。
+
+## 解码器成为可用 CLI；`day0control` 是一个 `switch (global.cur_client)` 状态机（2026-10-19 14:0x）
+
+`tools/gml_decode.py <脚本名> [条数]` 现在能直接输出带真实变量名/函数名的伪汇编：
+
+```
+$ python3 tools/gml_decode.py gml_Script_day0control 8
+== gml_Script_day0control bytecode=0x9d1adc len=2776 locals=1 args=0
+  000c pushglb cur_client
+  0014 dup 5        ← switch 分派开始
+  0018 pushim 1 / cmp / jt 6
+  0028 pushim 65526 ...
+```
+
+`gml_Script_textbox_create`（184 字节版本）：
+
+```
+0004 pop output_text
+000c call failcheck 0
+0038 call instance_create 3
+0040 pop temp_textbox
+0048 pushloc temp_textbox ; pushenv   ← with (temp_textbox) {…}
+```
+
+`day0control` 内 **27 处** `call textbox_create argc=3`，实参形状统一为
+`pushim 1 / pushim N / push <变量>`（变量在 0x9d1c70 等位置，全部解析为同名变量 `demo`，共 74 次出现，
+且**全部集中在本脚本内**）—— 说明 `demo` 是 `day0control` 自己的局部/循环变量。
+
+### 下一轮
+1. 把 `day0control` 里 `demo` 的**赋值点**找出来（它只有 74 次出现全在本脚本，必然在脚本前段被赋值），
+   确认正常路径上它会被设成什么；
+2. 对照我们运行期的失败现场（`input_text` 未设置），判断是 `demo` 未赋值、还是 `cur_client` 状态不对，
+   导致走到了不带文本的分支；
+3. 这一步之后就能给出「是移植侧哪一处状态/初始化不对」的结论。
