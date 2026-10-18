@@ -223,3 +223,30 @@ A 按住数秒（`buttons=0x1` 连续多秒）与带落点点击都没有推进�
 验证（模拟器 VA11-User，三次 `click:0.5,0.5`）：按下沿日志正常
 （`鼠标按下沿 服务 x=640 y=360 button=1 have=1`），键盘轮询与手柄 A 不受影响；
 标题画面仍未推进（下一步按调研建议补「按下沿锁存」与 focus/许可门控排查）。
+
+## 读侧统计 + 复数 GetNpadStates（2026-10-18 11:2x）
+
+之前只有「服务出去多少」的日志，没有「游戏每秒在读哪些输入面」的统计。本轮加了 `[hid-read]` 每秒汇总，
+并补了复数接口 `GetNpadStates`（通用 / FullKey / Handheld，伪历史：n 份重复当前状态、sampling 连续递减）。
+
+标题画面实测（模拟器 VA11-User，`DM_OPMODE=0` 掌机，DM_TEST_STEP 在第 6 s 按 A、第 9 s 点击）：
+
+```
+[dm] [hid-read] 每秒读取 npad=26 touch=26 mouse=417 kbd=26
+[dm] [hid-read] 每秒读取 npad=25 touch=25 mouse=400 kbd=25
+[dm] [hid-read] 每秒读取 npad=25 touch=25 mouse=401 kbd=25      ← 标题态稳定：每帧一次 pad/touch/kbd，鼠标每帧约 16 次
+[dm] 强制接管条目无任何引用：_ZN2nn3hid14GetNpadStatesEPNS0_17NpadHandheldStateEiPKj   ← 复数接口未被导入
+```
+
+**结论**：
+1. 标题态**连续读触屏**（25 次/秒，与 pad/keyboard 同拍），不是「不读触摸」；
+2. 帧率约 25 fps（每帧一次输入采样）；我们 120 ms 的 A 连拍 ≈ 3 帧，不是「落在两帧之间」；
+3. `GetNpadStates`（复数）**不在导入表里**（`强制接管条目无任何引用`）→ 之前「复数接口缺失导致边沿恒 0」的假设**排除**；
+4. 四路输入都在被读、且值都被服务出去，但标题仍不推进 → 怀疑点收敛到
+   「runner 把底层状态翻成 GML 输入的映射」或「游戏实际停在前一个逻辑状态（存档/账号/加载）」。
+
+**排除项汇总**（本轮后）：传输层（有服务日志）、采样频率（25 fps 覆盖）、复数接口（无导入）、
+单帧按下沿（多拍连发）、键盘 buffer 越界与鼠标 IsConnected（已修）、focus 默认值（=1 InFocus）。
+
+**剩余待验**：原版（未汉化）game.win 对照需要 prod.keys，本机没有（`~/.switch` 与工程内均无）
+→ 已记为需要用户提供原版 romfs/game.win 或 keys 的用户动作，不再空转。

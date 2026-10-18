@@ -50,6 +50,19 @@ static int g_stall_ms = -1; static _Atomic int g_stall_due;
 // When press and release fell between two controller reads of the game (two steps sent back to back when the script lags, or the game stalling input reads while loading / opening a panel) the whole key press used to be lost -- real device rf1, restarts 2 and 3:
 // the bottom bar menu key had only 0.09 ms from press to release, the game did not see it and the function page did not open. The latch only gives one extra sample, afterwards the front end's current value applies (released is released)
 static _Atomic uint64_t g_press_latch;
+// 读侧统计：每路 hid 接口的调用次数，每秒汇总一次（确认标题态实际在读哪些输入面）
+// Read-side counters: calls per hid entry point, summarised once a second (which input surfaces the title state actually reads)
+static _Atomic uint64_t g_rd_npad, g_rd_touch, g_rd_mouse, g_rd_kbd;
+static _Atomic uint64_t g_rd_last_ns;
+static void rd_tick(void) {
+    uint64_t t = now_ns(), last = atomic_load(&g_rd_last_ns);
+    if (!last) { atomic_store(&g_rd_last_ns, t); return; }
+    if (t - last < 1000000000ull) return;
+    if (!atomic_exchange(&g_rd_last_ns, t)) return;
+    uint64_t n = atomic_exchange(&g_rd_npad, 0), tc = atomic_exchange(&g_rd_touch, 0);
+    uint64_t m = atomic_exchange(&g_rd_mouse, 0), k = atomic_exchange(&g_rd_kbd, 0);
+    LOG("[hid-read] 每秒读取 npad=%llu touch=%llu mouse=%llu kbd=%llu", (unsigned long long)n, (unsigned long long)tc, (unsigned long long)m, (unsigned long long)k);
+}
 // 手柄（dm_input.h dm_pad_set）：按键与四轴打包在两个原子量里，按下沿同样锁存到游戏下一次取（手柄的短按不漏）
 // Controller (dm_input.h dm_pad_set): buttons and the four axes are packed into two atomics, and press edges are likewise latched until the game's next
 // read (short controller presses are not lost)
@@ -405,6 +418,7 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
         }
         receipt(s, id, style, 0, read_start_ns); return; // 没接这个样式：全0返回也收样 | this style is not connected: an all-zero return is sampled as well
     }
+    atomic_fetch_add(&g_rd_npad, 1); rd_tick();
     uint64_t km = keys_now();
     // 各通道的键先合起来（触屏 / 按键脚本 / 宿主替按 + 手柄；手柄没连时全 0），再裁决「独占的一下」——替玩家按的那一下要看的是游戏这一次实际会收到什么，
     // 不是某一个通道（先前只看了触屏通道，手柄玩家进局头 1.5 秒按 ＋ 开背包仍会把独占的 L 撞成换页签）
@@ -461,6 +475,34 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     receipt(s, id, style, km, read_start_ns);
 }
 
+
+// ---- 复数接口 GetNpadStates（伪历史）----
+// 规范里 GetNpadState 是单数便利函数，引擎有时用复数的 GetNpadStates(states, n, ids) 并拿 [1] 当「上一拍」做边沿检测。
+// 这里把当前状态重复填 n 份、sampling 号连续递减（与 nxnative 的伪历史一致），保证即使走这条路径也能看到按键。
+// ---- Plural GetNpadStates (pseudo history) ----
+// The real API has the convenience singular GetNpadState, but engines sometimes call the plural GetNpadStates(states, n, ids) and
+// treat [1] as "the previous tick" for edge detection. Repeat the current state n times with consecutive sampling numbers
+// (the same pseudo history nxnative uses), so buttons are visible even on that path.
+static void npad_hist(NpadState *out, int n, const uint32_t *ids) {
+    if (!out || n < 1) return;
+    for (int i = 0; i < n; i++) {
+        uint32_t id = ids ? ids[i] : 0; fill(&out[i], id, style_of(id));
+        if (i) out[i].sampling = out[0].sampling - (int64_t)i;   // 伪历史：越靠后越旧 | pseudo history: later entries are older
+    }
+}
+HLE_FORCE("_ZN2nn3hid14GetNpadStatesEPNS0_9NpadStateEiPKj", "VA-11：复数手柄状态（伪历史）", int32_t, h_hid_GetNpads, NpadState *out, int32_t n, const uint32_t *ids) {
+    { static int logged; if (!logged++) LOG("[hid-call] GetNpadStates（复数）被调用，n=%d", n); }
+    npad_hist(out, n, ids); return n;
+}
+HLE_FORCE("_ZN2nn3hid14GetNpadStatesEPNS0_16NpadFullKeyStateEiPKj", "VA-11：复数全键手柄状态（伪历史）", int32_t, h_hid_GetNpadsFK, NpadState *out, int32_t n, const uint32_t *ids) {
+    { static int logged; if (!logged++) LOG("[hid-call] GetNpadStates<FullKey>（复数）被调用，n=%d", n); }
+    npad_hist(out, n, ids); return n;
+}
+HLE_FORCE("_ZN2nn3hid14GetNpadStatesEPNS0_17NpadHandheldStateEiPKj", "VA-11：复数掌机手柄状态（伪历史）", int32_t, h_hid_GetNpadsHH, NpadState *out, int32_t n, const uint32_t *ids) {
+    { static int logged; if (!logged++) LOG("[hid-call] GetNpadStates<Handheld>（复数）被调用，n=%d", n); }
+    npad_hist(out, n, ids); return n;
+}
+
 HLE_FORCE("_ZN2nn3hid14InitializeNpadEv", "连 hid 服务；宿主从 dm_input 取输入", void, h_hid_InitNpad, void) {
     { static int logged; if (!logged++) LOG("[hid-call] InitializeNpad 被调用"); }}
 HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEv", "连 hid 服务；触屏输入由前端另接", void, h_hid_InitTouch, void) {}
@@ -500,6 +542,7 @@ HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_E
     // 真机按请求份数填满并返回份数（游戏要 16 份、只看第 0 份）；只填 1 份、返回 1 可能被游戏当成「没有可读状态」而忽略输入。
     // Fill all requested entries and return that count like the real console does (the game asks for 16 and looks at entry 0);
     // filling only one entry and returning 1 may be treated as "no readable state" and the input is ignored.
+    atomic_fetch_add(&g_rd_touch, 1); rd_tick();
     for (int i = 0; i < n; i++) touch_fill(&out[i], guest_ns());
     return n;
 }
@@ -530,6 +573,7 @@ _Static_assert(sizeof(MouseStateV) == 0x20, "nn::hid::MouseState 布局");
 int dm_touch_mouse(int *x, int *y, int *down);
 int dm_click_step(int *down_x, int *down_y);
 static void mouse_fill(MouseStateV *s, int *first) {
+    atomic_fetch_add(&g_rd_mouse, 1); rd_tick();
     int x = 0, y = 0, down = 0; int have = dm_touch_mouse(&x, &y, &down);
     {   // 帧同步点击队列：按下 / 按住 / 抬起各占一拍，保证游戏采样到干净的按下沿（d2r 的做法）
         // Frame-synchronised click queue: press / hold / release each take one tick so the game samples a clean edge (d2r's approach)
@@ -634,6 +678,7 @@ HLE_FORCE("_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE", "VA-11：键盘�
         for (int i = 0; i < 4; i++) { uint64_t v = atomic_load(&g_kbd_bits[i]); memcpy(p + 16 + i * 8, &v, 8); }
         kbd_test_window(p);
     }
+    atomic_fetch_add(&g_rd_kbd, 1); rd_tick();
     static int logged; if (!logged++) LOG("[hid-diag] 游戏开始轮询键盘状态（GetKeyboardState）");
     static uint64_t n; if (++n % 600 == 0) LOG("[hid-diag] 键盘轮询次数=%llu", (unsigned long long)n);
     return 1;
