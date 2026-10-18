@@ -2441,3 +2441,28 @@ NCZ 也已解成本地 NCA（585 MB）。但 NCA 是加密的（header 用 heade
 3. 预期 day0 黑屏消失，进入正常剧情。
 
 （若你更愿意我继续自己啃 NCA 解密，我下一轮会实现 XTS+标题密钥的 Python 解密器，但要几个回合。）
+
+## 突破：day0 黑屏修复（2026-10-19 17:2x）
+
+用户提供了 **romfs**（`赛博朋克酒保行动 Cyberpunk Bartender Action/romfs/`），里面有
+`scripts/eng/*.ini`（31 个台词文件，约 1.7 MB）。
+
+**第一次实测**（直接挂 `DM_ROMFS`）：仍然黑屏——因为 GameMaker 的 `buffer_load_async`／
+`file_text_open_read` 在端口里**不经过我们 hook 的 nn::fs**（日志里连一次 open 都没有），
+`global.dialog_files_texts` 始终为空。
+
+**解法**（已实测成功）：
+1. 把 `romfs/scripts/eng/` 放进存档目录（`host:/eng/...`，端口对 `host:` 的读写是好的）；
+2. 用 UTMT 把 `gml_Object_async_init_Step_0` 换成同步读 `host:/<名字>` 并 `ds_map_set` 进
+   `global.dialog_files_texts` 的版本（见 `tools/romfs_patch/async_init_step_host.gml`）。
+
+**结果**：
+- 日志：`LOADED eng/testroom.ini len=625` … 共 **28 行**（28 个台词文件全部加载）；
+- 点「新游戏」后 **ERROR=0**；
+- 模拟器截图 `out/day0_fixed.png`：**进入酒吧场景**，酒瓶/配方界面正常，底部对话框显示
+  **`Anna: Pssst.`** —— day0 黑屏问题**解决**。
+
+### 下一步（交付化）
+1. 把 UTMT 补丁流程脚本化（无 UI：`UndertaleModCli replace`），产物随 App 一起分发；
+2. App 首次启动把内置的 `eng/**.ini` 复制到 `Documents/save/eng/`；
+3. 重出 IPA → 真机（LiveContainer）验证 → 收尾（中文版换 `chn/**.ini` 即可）。
