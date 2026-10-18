@@ -354,6 +354,20 @@ static void tap_a_pulse_at(float nx, float ny) {
     // Six A pulses (120 ms down, 250 ms apart, ~2 s total): the title prompt blinks / has state windows, so a single pulse
     // is easy to miss; a short burst is robust.
     { extern void dm_click_request(float, float); dm_click_request(nx, ny); }   // 帧同步鼠标点击（菜单点选用真实落点）| frame-synced mouse click (real hit point for menu selection)
+    // 抬手后把落点重新按住 1.3 s：runner 的 device_mouse 只在触屏有活动触点时才停在该位置，
+    // 一抬手鼠标位置就回到默认点，随后的 A 又会确认默认项（读取/Load）。按住落点再补 A，
+    // 确认的就是落点上那一项（实测这是「点 New Game 却进读取」的最后一块）。
+    // Re-press the hit point for 1.3 s after the lift: the runner's device_mouse only stays at that position while a
+    // touchscreen point is active; on lift it snaps back to the default point, so the later A confirms the default item
+    // (Load). Holding the hit point while pulsing A makes the confirmation land on the item under the tap (measured:
+    // this is the last missing piece of "tap New Game but end up in Load").
+    {
+        dm_touch hold = {0, nx, ny};
+        dm_touch_set(&hold, 1);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.30 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            dm_touch_set(NULL, 0);
+        });
+    }
     // 先让鼠标点击把菜单选择挪到落点，再补 A/Enter/Space：VA-11 的主菜单在收到 A 的同一拍会确认
     // **手柄当前选择位**（默认「读取」），所以补键必须等点击生效（实测提前补键会直接进读档页）。
     // Let the mouse click move the menu selection to the hit point before pulsing A/Enter/Space: on the same tick as an A
