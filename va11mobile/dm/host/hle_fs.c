@@ -574,6 +574,17 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", Result, h_fs_ReadFile, size_t *out, uint64_t h, int64_t off, void *buf, size_t sz) {
+    // 诊断：把游戏数据文件（第一次打开的那个大文件）的前若干次读取位置记下来，用来对照「台词文本在文件里的偏移」
+    // 是否真的被读到（台词字符串在 game.win 的 0xb45xxx–0xb8xxxx 一带）。
+    // Diagnostic: record the first reads of the game data file (the first big file opened) so we can tell whether the
+    // dialogue-text region inside it (around 0xb45xxx-0xb8xxxx) is ever read at all.
+    { static _Atomic int nread, data_fd = -1; int fd = (int)h;
+      if (fd > 0 && fd < 4096) {
+          uint64_t total = (uint64_t)lseek(fd, 0, SEEK_END); lseek(fd, 0, SEEK_SET);
+          if (total > (64u << 20)) {
+              int expect = -1; if (data_fd < 0) { if (atomic_compare_exchange_strong(&data_fd, &expect, fd)) LOG("fs 数据文件句柄 = %d（%llu 字节）", fd, (unsigned long long)total); }
+              if (atomic_load(&data_fd) == fd) { int n = atomic_fetch_add(&nread, 1);
+                  if (n < 60 || (off >= 0xb30000 && off < 0xba0000)) LOG("fs 数据读取 #%d off=%#llx size=%zu", n, (unsigned long long)off, sz); } } } }
     if (!h) { *out = 0; return RES_FAIL; }   // 文件句柄就是 fd，0 是标准输入、不会是游戏打开的文件：打开失败后照用的空句柄 | A file handle is an fd; 0 is standard input and never a file the game opened: it is the null handle the game keeps using after a failed open
     size_t got = 0; uint64_t t0 = g_flag.bootprof ? now_ns() : 0;
     dm_guest_write_prepare(buf, sz);   // 目标可能是图形层写保护的贴图池页：内核写只读页返回 EFAULT 而不缺页，先解保护并标脏 | The destination may be a texture pool page write-protected by the graphics layer: a kernel write to a read-only page returns EFAULT instead of page-faulting, so unprotect and mark dirty first

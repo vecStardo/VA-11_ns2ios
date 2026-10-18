@@ -958,3 +958,39 @@ gml_Object_dialog_control_Create_0
 - `tools/import_census.py`：导入 vs 宿主钩子普查工具（找出没有任何宿主实现命名的 nn:: 导入）。
 
 新包：`Va11IOS-unsigned-20261018-1507-audiofix.ipa`（17,019,978 B，sha256 前 24 位 `36675623edbeb634379c419c`，0 项红）。
+
+## 确定性复现脚本：day0 对话框崩溃（2026-10-18 15:0x）
+
+**突破：不需要真人点按也能复现了。** 关键在菜单默认高亮是「Load」——对 New Game 位置连点 4 次
+（第一次开菜单，后几次才落到项上）就能进 New Game，随后稳定触发同一条报错：
+
+```
+tools/repro_day0.sh 80
+→ GM 报错数: 1
+→ day0 栈: 1
+   gml_Script_textbox_loadbox
+   gml_Object_obj_textbox_Other_10 ← gml_Script_textbox_create
+   gml_Script_day0control ← gml_Script_daycontrol ← gml_Object_dialog_control_Create_0
+```
+
+本轮据此排除/确认的事实：
+
+| 假设 | 实验 | 结论 |
+|---|---|---|
+| 语言相关 | `DM_LANG=en-US / en-GB / ja-JP` 各跑一遍 | **全部报错** → 与语言无关（此前「ja 不报错」是 attract 模式，不是 day0） |
+| 存档脏 | 清空 save 只留 game.win | 仍报错 → 与存档无关 |
+| 挂载状态查询 | 实现并记录 `nn::fs::IsMounted` / `detail::GetMountName` | **游戏一次都没调用** → 不是这条 |
+| 目录枚举 | `OpenDirectory` 也记日志 | 无任何目录枚举 |
+| 缺台词文件 | 记录全部 OpenFile / OPENDIR / 失败 | 只有 `game.win` 与 `Waifu Preferences.txt`，**没有失败打开** |
+| 数据文件读取 | 记录数据文件前 60 次读取 | **一次性整读 520,720,771 字节**（off=0 全量），之后不再读 → 台词数据在内存里 |
+
+也就是说：台词字符串确实在 `game.win` 内（`0xb45xxx–0xb8xxxx` 一带能直接看到中英文旁白原文），
+数据也整块读进内存了；问题出在**游戏自己的 GML 解析/索引**，而不是「缺文件」。
+`textbox_loadbox` 附近的字符串给出它用的变量：`file_name`、`temp_fname`、`temp_text_pointer`、
+`temp_chr`、`temp_textbox`、`start_pointer`、`pointer`。
+
+### 下一步（下一轮做）
+1. 在 main 模块里定位「数组越界/非数组索引」的运行时检查函数（YYC 原生码），在检查点记录**数组指针与下标**，
+   直接看出是哪个变量；
+2. 若不便插桩，退而求其次：把 `DM_TEST_STEP` 换成「点开 Settings/其它菜单项」对照，确认只有对话框路径崩；
+3. 每轮都用 `tools/repro_day0.sh` 做回归（不再需要用户手动点）。
