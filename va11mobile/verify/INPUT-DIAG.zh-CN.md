@@ -2075,3 +2075,37 @@ gml_Script_textbox_create  条目 0xaea51c len=164  locals=2 args=0  → 字节�
 1. 写一个最小 GML 字节码解码器（已知 `0x45` 一类的变量访问操作码），把 `textbox_create` 这 164 字节解出来，
    看它到底往 `input_text` 里放了什么；
 2. 顺带解 `obj_textbox` Create 事件（5260 字节），确认它是否给 `input_text` 赋初值。
+
+## GML 字节码解码器跑通（2026-10-19 11:0x）
+
+参照 libgm（Rust 版 GameMaker 解析库）的指令编码实现了最小解码器 `tools/gml_decode.py`：
+
+- 每条指令 4 字节小端字，**操作码在最高字节**（`word>>24`），其余按 libgm 的位域规则解析；
+- 变量引用（`PUSHLOC/PUSHGLB/PUSHBLTN/PUSH(type=Variable)/POP`）= 4 字节字 + 紧跟一个 u32 变量 id；
+- `CALL` = 4 字节字 + 紧跟一个 u32 函数 id；分支 = 24 位有符号偏移。
+
+**`gml_Script_textbox_create`（164 字节）解出来是**：
+
+```
+0x00  op a0 (217,3,0)        ← 尚未识别（可能新版本特有的入口指令）
+0x04  ret / 0x08 popz
+0x0c  pushim 64  ; conv int16→value
+0x14  pushim 0   ; conv
+0x1c  pushim 0   ; conv
+0x24  call func=23872 argc=3    ← 很像 instance_create(x,y,obj)
+0x2c  pop <变量>
+0x34  pushloc …  ; conv value→int
+0x40  pushenv 24                ← **with 块开始**（with(实例) { … }）
+0x44  pushim -1 ; pushim 0 ; push.var …
+0x54  pop …
+…（后面是对两个字段的赋值，最后 popenv）
+```
+
+重要观察：`textbox_create` 里确实有一个 **`with(...)` 块**（`pushenv`/`popenv`），
+说明它是在 `with` 里给新建的 `obj_textbox` 实例赋字段 —— `input_text` 很可能就在这个 with 块里被赋值。
+（当前变量 id→名字的映射还不完全对：有些 id 解出来是十六进制，需要把 VARI 列表的编号空间对齐。）
+
+### 下一轮
+1. 修正 VARI 编号空间（变量 id ↔ 名字），把 `with` 块里的每个 `pop 变量` 变成可读名字 —— 直接看是不是 `input_text`；
+2. 若 `textbox_create` 确实赋了 `input_text`，那问题就变成「这段代码为何没跑/跑错实例」，
+   可在运行期用观测门/断点确认 `pushenv` 之后的赋值是否执行。
