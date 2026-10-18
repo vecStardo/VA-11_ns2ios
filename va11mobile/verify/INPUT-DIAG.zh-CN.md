@@ -2420,3 +2420,24 @@ if (global.consoles_flag) {
 1. 用 nsz 的 Nca/Ticket 模块解开 NCA（header key + 票里的 title key），导出 romfs；
 2. 把 `eng/**.ini` 放进端口的 romfs 目录（`DM_ROMFS`），再跑 day0 验证；
 3. 若成功，day0 黑屏应当消失——这也是整个移植最后一块拼图（换中文只需换 `chn/**.ini`）。
+
+## romfs 提取尝试（2026-10-19 16:5x）
+
+已把 NSP 解包：`~/va11-work/extract_x/game/` 下得到 NCZ/NCA 与 **`.tik`（ticket）**；
+NCZ 也已解成本地 NCA（585 MB）。但 NCA 是加密的（header 用 header_key XTS，section 用票内 title key），
+直接搜 `IVFC` / `[st_pointer]` 都搜不到，说明 romfs 内容尚未解密。
+
+试过/评估过：
+- `nsz` 只能解 NSP/NCZ 容器，不带 romfs 文件树导出；
+- Homebrew 没有 hactool；
+- PyPI 的 `nut` 是无关包，blawar/nut 从 GitHub 源码安装失败（构建依赖问题）。
+
+⇒ 最省事的路径是**用 Ryujinx 一键「提取 RomFS」**（或任何 hactool/nxdumptool），把导出的
+`romfs/` 目录给我；里面应当有 `eng/1.2/anna.ini`、`eng/anna_script.ini` 等文件。
+
+拿到后：
+1. 放进端口的 romfs 目录（`DM_ROMFS`）；
+2. 跑 day0 复现脚本，确认 `fs open` 里出现这些 .ini、`dialog_files_texts` 被填满；
+3. 预期 day0 黑屏消失，进入正常剧情。
+
+（若你更愿意我继续自己啃 NCA 解密，我下一轮会实现 XTS+标题密钥的 Python 解密器，但要几个回合。）
