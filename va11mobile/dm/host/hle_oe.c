@@ -64,6 +64,7 @@ void dm_set_opmode(int m) {   // 前端调（过热降级等）：改状态并�
 }
 // FocusState：1 InFocus、2 OutOfFocus、3 Background。前端调 dm_focus_set（iOS 生命周期 / Mac 窗口失焦）
 // FocusState: 1 InFocus, 2 OutOfFocus, 3 Background. The front end calls dm_focus_set (iOS lifecycle / Mac window losing focus)
+static _Atomic uint64_t g_rd_focus, g_rd_opmode;
 static _Atomic int g_focus = 1; static _Atomic uint64_t g_focus_in_ns;   // 最近一次进入 InFocus 的时刻 | time of the most recent entry into InFocus
 int dm_focus_now(void) { return atomic_load(&g_focus); }
 uint64_t dm_focus_in_since(void) { return atomic_load(&g_focus_in_ns); }   // 图形层显示节拍看门狗：只在激活时算停顿，从激活起算（nvn_mtl.m mtl_present_wait） | graphics layer display link watchdog: stalls are only computed while active, counted from activation (nvn_mtl.m mtl_present_wait)
@@ -85,7 +86,7 @@ HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "截图开关；宿主无系统截�
 
 // OperationMode：0 Handheld、1 Console；PerformanceMode：0 Normal、1 Boost（与运行模式一一对应）
 // OperationMode: 0 Handheld, 1 Console; PerformanceMode: 0 Normal, 1 Boost (one-to-one with the operation mode)
-HLE_FORCE("_ZN2nn2oe16GetOperationModeEv", "运行模式查询；按 DM_OPMODE 给固定值", int, h_oe_GetOpMode, void) { int u = g_ui_opmode; if (atomic_exchange(&g_ui_armed, 0)) atomic_fetch_add(&g_ui_reads, 1); return u >= 0 ? u : opmode(); }
+HLE_FORCE("_ZN2nn2oe16GetOperationModeEv", "运行模式查询；按 DM_OPMODE 给固定值", int, h_oe_GetOpMode, void) { int u = g_ui_opmode; if (atomic_exchange(&g_ui_armed, 0)) atomic_fetch_add(&g_ui_reads, 1); uint64_t n = atomic_fetch_add(&g_rd_opmode, 1) + 1; int v = u >= 0 ? u : opmode(); if (n == 1) LOG("[oe-read] GetOperationMode 首次被读 → %d（0=Handheld）", v); else if ((n % 600) == 0) LOG("[oe-read] GetOperationMode 读次数=%llu 值=%d", (unsigned long long)n, v); return v; }
 HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "性能模式查询；与运行模式一致", int, h_oe_GetPerfMode, void) { return opmode(); }
 HLE_FORCE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", "设 CPU/GPU 频率档；宿主不调频", void, h_oe_SetPerfCfg, int mode, int cfg) {
     LOG("oe::SetPerformanceConfiguration mode=%d cfg=%#x（忽略）", mode, cfg);
@@ -124,7 +125,16 @@ static void oe_script_start(void) {
 }
 static pthread_once_t g_oe_once = PTHREAD_ONCE_INIT;
 
-HLE_FORCE("_ZN2nn2oe20GetCurrentFocusStateEv", "前后台状态；由前端 dm_focus_set 驱动", int, h_oe_GetFocus, void) { return g_focus; }
+// 读侧统计：GM runner 可能用「是否在前台」门控输入。这里记录被读次数与第一次读到的值，
+// 用来判断「输入全哑」是否因为 runner 认为 applet 没有焦点（四路输入同时失效时这是头号嫌疑）。
+// Read-side counters: the GM runner may gate input on "is the applet in focus". Record how many times it is read
+// and the first value, to tell whether dead input is caused by the runner thinking the applet is unfocused.
+HLE_FORCE("_ZN2nn2oe20GetCurrentFocusStateEv", "前后台状态；由前端 dm_focus_set 驱动", int, h_oe_GetFocus, void) {
+    uint64_t n = atomic_fetch_add(&g_rd_focus, 1) + 1;
+    int st = g_focus;
+    if (n == 1) LOG("[oe-read] GetCurrentFocusState 首次被读 → %d（1=InFocus）", st);
+    else if ((n % 600) == 0) LOG("[oe-read] GetCurrentFocusState 读次数=%llu 值=%d", (unsigned long long)n, st);
+    return st; }
 HLE_FORCE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", "前后台切换策略；游戏设 1（收焦点通知），宿主按通知语义实现", void, h_oe_SetFocusMode, int m) { LOG("oe::SetFocusHandlingMode %d", m); }
 
 // 通知：返回 bool（w0），宿主没有系统通知

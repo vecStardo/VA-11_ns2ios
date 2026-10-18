@@ -318,3 +318,37 @@ python3 tools/va11_extract.py <ncz> ~/va11-work                      # 解出 pr
 python3 tools/extract_original_game_win.py ~/va11-work/program.nca ~/va11-work/orig/game.win
 cp ~/va11-work/orig/game.win <App 容器>/Documents/save/game.win      # 模拟器对照用
 ```
+
+## focus/许可门控排查 + 「点按确实改变了行为」（2026-10-18 10:5x）
+
+给 `hle_oe.c` 加了读侧统计（`[oe-read]`，记录首次读取的值与每 600 次读的次数），实测：
+
+```
+[dm] oe::SetFocusHandlingMode 2
+[dm] [oe-read] GetOperationMode 首次被读 → 0（0=Handheld）
+（没有任何 GetCurrentFocusState 读取记录 → runner 从不查焦点）
+```
+
+→ **焦点门控假设排除**：runner 不读 `GetCurrentFocusState`；运行模式报的是掌机 0；它只是把焦点处理模式设成 2（不通知）。
+
+### 新线索：点按确实改变了游戏行为
+
+同一时刻起跑、同一取样时刻对比「完全无输入」与「18 s 单次点按」：
+
+| 采样时刻 | 无输入（A） | 18 s 单次点按（B） |
+|---|---|---|
+| 20 s | 动态画面 | 与 A 相同 |
+| 25 s / 35 s | 两帧不同（attract 在演） | **两帧完全相同（画面静止在标题）** |
+
+三次点按（18/22/26 s）版本同样：32 s 后 40 s 与 50 s 两帧完全一致（`out/C_50.png` 仍是英文标题
+`Good Bye Miss Bartender 1.2.3.0 / Tap or press A to start`）。
+
+**解释**：点按**不是完全没到**——它把 attract 演示打断成静止标题；但「从标题开始游戏」这一步没被接受。
+这解释了此前所有「看起来没反应」的观察，也把问题缩小到：**attract→标题 的输入路径能走通，
+标题→开始 的路径走不通**（可能是不同的输入分支：`keyboard_check(vk_anykey)` 类全局键 vs
+标题专用按钮/点击区域）。
+
+### 下一步
+1. 对比「attract 中断」与「标题开始」两个分支在 GML 侧用什么函数（下一步需要反汇编/字符串定位）；
+2. 试 `DM_TEST_STEP` 在 attract 中断后再等 10 s 才按键（避免两次输入落在同一状态机里）；
+3. 若标题开始只用指针**点击特定区域**，需要用归一化坐标扫描标题上的可点区域（而非屏幕中心）。
