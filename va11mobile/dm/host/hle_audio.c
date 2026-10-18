@@ -38,6 +38,9 @@ typedef struct {
     pthread_t notify_th; _Atomic int notify_run, notify_pending, notify_armed;
     _Atomic uint64_t notify_ns;        // 最近一次「有缓冲释放、要通知」的时刻（量通知线程被叫醒的延迟） | Time of the most recent "buffer released, needs notifying" event (to measure the notification thread's wake-up latency)
     int dry;                           // 这次声卡回调里待播队列空了（在播放态）= 一次欠载（断音） | The pending playback queue was empty in this audio callback (while playing) = one underrun (audio dropout)
+    _Atomic uint64_t st_append, st_bytes, st_dry, st_calls, st_peak;  // 音频统计（诊断「爆音」用） | audio stats (for diagnosing distortion)
+    _Atomic int st_run;                 // 统计线程运行标志 | stats thread run flag
+    pthread_t st_th;                    // 统计线程（每个输出一个） | stats thread (one per output)
 } aout;
 
 // 打开中的输出登记表：前端生命周期（切后台）一次性暂停 / 恢复
@@ -153,7 +156,9 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
     // Diagnostic switch DM_AUDIO_OUT_DUMP=<file>: append the data handed to CoreAudio as is (stereo after the downmix). This machine has no loopback device and cannot record the system output; to tell whether the dialogue was handed over, look at this file
     { static FILE *df; static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); on = e != NULL; if (on && !(df = fopen(e, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", e); }
       if (df) fwrite(bl->mBuffers[0].mData, 1, bl->mBuffers[0].mDataByteSize, df); }
-    { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }   // 通知线程 QoS 对照：按当前相记 | Notification thread QoS comparison: recorded per current phase
+    { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }
+    atomic_fetch_add_explicit(&a->st_calls, 1, memory_order_relaxed);
+    if (a->dry) atomic_fetch_add_explicit(&a->st_dry, 1, memory_order_relaxed);   // 通知线程 QoS 对照：按当前相记 | Notification thread QoS comparison: recorded per current phase
     return noErr;
 }
 #if !TARGET_OS_IPHONE
@@ -195,6 +200,32 @@ static int au_open(aout *a) {   // 0 = 声卡开好了；-1 = 开不了（a->au 
 }
 // 静音接收端：每 5 ms 按 48 kHz 实时消耗
 // Silent sink: consumes in real time at 48 kHz every 5 ms
+// 音频统计线程：每 5 秒记一行（追加块数、字节、回调次数、欠载次数、峰值、队列深度）——判「爆音」是数据满幅还是播放端欠载
+// Audio stats thread: one line every 5 s (appended blocks/bytes, callbacks, underruns, peak, queue depth) to tell whether
+// distortion comes from saturated data or from playback-side underruns.
+static void *audio_stats(void *p) {
+    aout *a = p;
+    LOG("audio 统计线程启动 out=%p", (void *)a);
+    uint64_t last_append = 0, last_bytes = 0, last_calls = 0, last_dry = 0;
+    while (atomic_load_explicit(&a->st_run, memory_order_relaxed)) {
+        usleep(5000000);
+        uint64_t ap = atomic_load_explicit(&a->st_append, memory_order_relaxed);
+        uint64_t by = atomic_load_explicit(&a->st_bytes, memory_order_relaxed);
+        uint64_t cl = atomic_load_explicit(&a->st_calls, memory_order_relaxed);
+        uint64_t dr = atomic_load_explicit(&a->st_dry, memory_order_relaxed);
+        uint64_t pk = atomic_load_explicit(&a->st_peak, memory_order_relaxed);
+        uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
+        uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
+        if (ap != last_append || cl != last_calls) {
+            LOG("audio 统计 out=%p ch=%d：追加 %llu 块 / %.1f KiB，回调 %llu 次，欠载 %llu 次，峰值 %llu，队列 %u",
+                (void *)a, a->ch, (unsigned long long)ap, (by - last_bytes) / 1024.0,
+                (unsigned long long)cl, (unsigned long long)dr, (unsigned long long)pk, qt - qh);
+            last_append = ap; last_bytes = by; last_calls = cl; last_dry = dr;
+        }
+    }
+    return NULL;
+}
+
 static void *null_sink(void *p) {
     aout *a = p; uint8_t scratch[RATE / 200 * 2 * 8];
     uint64_t bytes = (uint64_t)RATE / 200 * 2 * a->ch, t = now_ns();
@@ -237,6 +268,7 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     pthread_mutex_unlock(&g_aos_lock);
     LOG("audio::OpenAudioOut %s 声道 %d %s", name ? name : "(默认)", ch, real_audio() ? "真出声" : "静音接收端");
     if (real_audio()) au_open(a);   // 开不了就 a->au 为空，开始播放时走静音接收端 | if it cannot be opened, a->au is null, and playback goes to the silent sink when it starts
+    atomic_store_explicit(&a->st_run, 1, memory_order_relaxed); pthread_create(&a->st_th, NULL, audio_stats, a);
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result, h_au_Start, void *g) {
@@ -261,6 +293,8 @@ HLE_FORCE("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", "关闭音频输出", v
     atomic_store_explicit(&a->notify_run, 0, memory_order_release);
     dispatch_semaphore_signal(a->notify_sem);
     pthread_join(a->notify_th, NULL);
+    atomic_store_explicit(&a->st_run, 0, memory_order_release);
+    pthread_join(a->st_th, NULL);
     pthread_mutex_lock(&g_aos_lock);
     for (int i = 0; i < AOMAX; i++) if (g_aos[i] == a) g_aos[i] = NULL;
     pthread_mutex_unlock(&g_aos_lock);
@@ -286,6 +320,15 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
     // cross-correlate the original game's audio against it (this is how the tier-one drop sound was verified). The file is opened only when the variable is set; when unset this costs only one extra cached check
     { static FILE *df; static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_DUMP"); on = e != NULL; if (on && !(df = fopen(e, "wb"))) LOG("【红】DM_AUDIO_DUMP 打不开 %s", e); }
       if (df && b && b->ptr && b->size) fwrite(b->ptr, 1, (size_t)b->size, df); }
+    // 统计：追加次数/字节/峰值（诊断「爆音」是数据本身满幅还是播放端问题）
+    if (b && b->ptr && b->size >= 2) {
+        int16_t *pcm = (int16_t *)b->ptr; size_t n = (size_t)b->size / 2; int pk = 0;
+        for (size_t i = 0; i < n; i++) { int v = pcm[i] < 0 ? -pcm[i] : pcm[i]; if (v > pk) pk = v; }
+        atomic_fetch_add_explicit(&a->st_append, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&a->st_bytes, b->size, memory_order_relaxed);
+        uint64_t old = atomic_load_explicit(&a->st_peak, memory_order_relaxed);
+        while (pk > (int)old && !atomic_compare_exchange_weak_explicit(&a->st_peak, &old, (uint64_t)pk, memory_order_relaxed, memory_order_relaxed)) {}
+    }
     pthread_mutex_lock(&a->m);
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);

@@ -14,6 +14,7 @@
 #include <stdatomic.h>
 #import <QuartzCore/QuartzCore.h>
 #import <OpenGLES/EAGL.h>
+#import <AVFoundation/AVFoundation.h>
 #import <OpenGLES/ES2/gl.h>
 #import <mach-o/getsect.h>
 #import <mach-o/dyld.h>
@@ -569,8 +570,29 @@ static void front_window_tap(float nx, float ny) {
     front_window_tap(w > 0 ? (float)(p.x / w) : 0.5f, h > 0 ? (float)(p.y / h) : 0.5f);
 }
 
+// 音频会话必须在起客之前配好：iOS 缺省类别是 SoloAmbient（静音开关生效、会被系统压低/混音），
+// 而且硬件缺省率常是 44.1 kHz——我们交给 AudioUnit 的是 48 kHz 16 位，不显式设 Playback + 48 kHz 时
+// 听感会发闷甚至爆音。这里设成 Playback、偏好 48 kHz、5 ms 缓冲并激活。
+// The audio session must be configured before the guest starts: iOS defaults to SoloAmbient (respects the mute
+// switch, gets ducked/mixed by the system) and the hardware default rate is often 44.1 kHz, while we hand the
+// AudioUnit 48 kHz 16-bit; without an explicit Playback + 48 kHz session it sounds muffled or distorted. So set
+// Playback, prefer 48 kHz / 5 ms and activate it here.
+static void setup_audio_session(void) {
+    NSError *err = nil;
+    AVAudioSession *s = AVAudioSession.sharedInstance;
+    if (![s setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeDefault options:0 error:&err])
+        fprintf(stderr, "[boot] 【红】音频会话类别设置失败：%s\n", err.localizedDescription.UTF8String);
+    [s setPreferredSampleRate:48000 error:nil];
+    [s setPreferredIOBufferDuration:0.005 error:nil];
+    if (![s setActive:YES error:&err])
+        fprintf(stderr, "[boot] 【红】音频会话激活失败：%s\n", err.localizedDescription.UTF8String);
+    fprintf(stderr, "[boot] 音频会话：类别=%s 采样率=%.0f Hz 缓冲=%.2f ms\n",
+            s.category.UTF8String, s.sampleRate, s.IOBufferDuration * 1000.0);
+}
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     (void)application; (void)launchOptions;
+    setup_audio_session();
     g_win = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     UIViewController *vc = [[UIViewController alloc] init];
     vc.view.backgroundColor = UIColor.blackColor;

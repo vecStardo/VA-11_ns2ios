@@ -2506,3 +2506,31 @@ LANGUAGE SELECT 界面选择即可。
 | `game_patched_CN.win` | 简体中文 | `out/cn_default.png`（界面中文 + `Anna: 这样的登场方式如何?`） |
 
 生成方式：`tools/romfs_patch/apply_patch.sh <原版 game.win> <输出> [cn]`（第三个参数 `cn` 固定中文默认）。
+
+## 音频「爆」问题排查（2026-10-19 20:0x）
+
+现象：用户真机（LiveContainer）反馈音频是爆的。
+
+诊断（新增统计，每 5 秒一行 `audio 统计`，输出到 boot.txt）：
+
+| 指标 | 桌面宿主 | 模拟器 |
+|---|---|---|
+| 追加 | ~30 块/秒、937 KiB/5 s（≈ 48 kHz×2ch×16bit 实时） | 同 |
+| 声卡回调 | ~86 次/秒 | 同 |
+| 欠载 | **0** | **0** |
+| 峰值 | 19826（无削波） | 20853（无削波） |
+| DM_AUDIO_OUT_DUMP 分析 | 54 s PCM，peak 19826、RMS≈900、无削波 | — |
+
+⇒ 交给 CoreAudio 的数据本身干净、无削波、无欠载；问题更可能在 **iOS 音频会话**：
+此前 App 从未配置 `AVAudioSession`，缺省是 SoloAmbient（静音开关生效、被系统压低/混音），
+硬件缺省采样率也常是 44.1 kHz，而宿主按 48 kHz 16 位交给 RemoteIO。
+
+修复：
+1. `iosapp/Sources/main.m` 新增 `setup_audio_session()`：`AVAudioSessionCategoryPlayback` +
+   偏好 48 kHz / 5 ms + `setActive:YES`，启动时打印「音频会话：类别=… 采样率=… 缓冲=…」；
+2. `Makefile` 链接 `AVFoundation`（`gen_build_ios.py` 会自动带进 iOS 工程）；
+3. `hle_audio.c` 新增音频统计线程（每 5 秒记录追加/回调/欠载/峰值/队列）——真机若仍「爆」，
+   看 boot.txt 里的 `audio 统计` 就能区分是数据满幅还是播放端欠载。
+
+验证（模拟器）：`[boot] 音频会话：类别=AVAudioSessionCategoryPlayback 采样率=48000 Hz 缓冲=2.67 ms`，
+`audio 统计` 行显示追加正常、欠载 0、峰值 20853，ERROR=0，游戏正常进酒吧（out/audio_fix.png）。

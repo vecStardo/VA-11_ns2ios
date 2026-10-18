@@ -8,6 +8,8 @@
 #include "dm_elysium.h"
 #include "dm_bossrush.h"
 #include <TargetConditionals.h>
+static uint64_t g_blk_first[2][32]; static int g_blk_have;   // 运行时全局块采样缓存（跨平台声明）
+
 #include <fcntl.h>
 #include <dirent.h>
 #include <stdatomic.h>
@@ -737,7 +739,6 @@ static void dm_log_tlr(const char *tag) {
 // x2 = 变量名字符串、x3 = 对象名、w4/w5 = 两个索引。命中说明某实例变量从未被赋值。
 // Observation at the "variable not set before reading" raise site (OBS_VARREAD at main+0x23000):
 // x2 = variable name string, x3 = object name, w4/w5 = indices. A hit means an instance variable was never assigned.
-static uint64_t g_blk_first[2][32]; static int g_blk_have;   // 运行时全局块采样缓存（跨平台声明）
 int dm_host_readable(const void *addr, size_t len);
 static void va11_varread_obs(const uint64_t *regs) {
     const char *vname = (const char *)(uintptr_t)regs[2];

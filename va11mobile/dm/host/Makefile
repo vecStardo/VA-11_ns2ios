@@ -76,4 +76,4 @@ print-macos-min-m3:
 	@echo $(MACOS_MIN_M3)
 
 dmhost_m3: $(SRC) $(GFX) $(LIBDEFLATE) dm.h hle.h dm_input.h front.h touch_mac.h $(GFX_H)
-	clang $(CFLAGS_M3) -DAPP_NAME=$(APP_NAME_VAL) -I. -I../gfx/nvn/include -fobjc-arc -o $@ $(SRC) $(GFX) $(LIBDEFLATE) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework UniformTypeIdentifiers -framework GameController -framework Network -framework OpenGL
+	clang $(CFLAGS_M3) -DAPP_NAME=$(APP_NAME_VAL) -I. -I../gfx/nvn/include -fobjc-arc -o $@ $(SRC) $(GFX) $(LIBDEFLATE) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework UniformTypeIdentifiers -framework GameController -framework Network -framework AVFoundation -framework OpenGL
