@@ -134,6 +134,7 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
     if (released) notify_release(a);
 }
 
+static _Atomic int g_dump_seq;
 static _Atomic uint64_t g_render_calls;   // 声卡回调累计（生命周期验证：恢复后须继续增长） | Cumulative sound card callbacks (lifecycle verification: must keep growing after resume)
 uint64_t dm_audio_render_calls(void) { return atomic_load_explicit(&g_render_calls, memory_order_relaxed); }
 // 5.1 → 双声道（公开 的：原先把游戏的 6 声道原样交给 AudioUnit、不设声道布局，系统隐式转换只取前两路，中置——NPC 对白——整路丢掉）。
@@ -163,7 +164,10 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
                 LOG("audio 回调布局：buffer[%u] bytes=%u data=%p", i, (unsigned)bl->mBuffers[i].mDataByteSize, bl->mBuffers[i].mData);
         }
     }
-    { static FILE *df; static int don = -1; if (don < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); don = e != NULL; if (don && !(df = fopen(e, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", e); }
+    {   // 每个输出单独一个文件（<path>.<序号>）：两个 AudioOut 共用一个文件会把两路交错写在一起，无法判断听感
+        static FILE *df; static int don = -1; static char dfn[1024];
+        if (don < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); don = e != NULL;
+            if (don) { snprintf(dfn, sizeof dfn, "%s.%d", e, (int)(atomic_fetch_add_explicit(&g_dump_seq, 1, memory_order_relaxed))); if (!(df = fopen(dfn, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", dfn); else LOG("audio dump → %s", dfn); } }
       if (df) fwrite(bl->mBuffers[0].mData, 1, bl->mBuffers[0].mDataByteSize, df); }
     {   // 自检音：DM_AUDIO_TESTTONE=1 → 440 Hz 正弦（用来把「数据/格式问题」与「设备/会话问题」分开）
         static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_TESTTONE"); on = e && atoi(e); }
