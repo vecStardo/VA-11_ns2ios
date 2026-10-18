@@ -203,6 +203,19 @@ if os.environ.get('DM_FOREIGN_GAME') and NAME == 'main':
         cuts.append((0xc54, struct.pack('<I', w54).hex(),
                      struct.pack('<I', _adrp(19, 0xc54, 0x335632)).hex() + struct.pack('<I', 0x91000000 | (0x632 << 10) | (19 << 5) | 19).hex(),
                      'VA-11: boot reads save:/preselected_user (missing -> NULL) and dereferences it; pin x19 to the rodata string "False"'))
+    # 实验：把「非数组索引」报错路径的 b.eq 改成无条件跳转（跳过报错），用来探测游戏拿到 undefined 后还能走多远。
+    # 仅实验产物，默认关闭（DM_VA11_SUPPRESS_ARRAY_ERR=1 才启用）。
+    # Experiment: turn the "index a non-array" raise into an unconditional branch (skip the error) to see how far the game
+    # gets with the undefined value. Experimental only, off by default (enabled by DM_VA11_SUPPRESS_ARRAY_ERR=1).
+    if os.environ.get('DM_VA11_SUPPRESS_ARRAY_ERR') == '1':
+        w10c = struct.unpack_from('<I', IMG, 0x1810c)[0]
+        if (w10c & 0xff000010) == 0x54000000:      # b.eq <target>
+            imm = (w10c >> 5) & 0x7FFFF
+            if imm & 0x40000: imm -= 0x80000
+            tgt = 0x1810c + imm * 4
+            nb = 0x14000000 | (((tgt - 0x1810c) // 4) & 0x3FFFFFF)
+            cuts.append((0x1810c, struct.pack('<I', w10c).hex(), struct.pack('<I', nb).hex(),
+                         'VA-11 EXPERIMENT: suppress the "index non-array" raise (b.eq -> b) to observe post-error behaviour'))
     w68 = struct.unpack_from('<I', IMG, 0xc68)[0]
     assert (w68 >> 26) == 0x25, '0xc68 不是 bl'
     cuts.append((0xc68, struct.pack('<I', w68).hex(), struct.pack('<I', 0x52800020).hex(), 'VA-11: boot strncmp(x19,"True") -> pin w0=1 (no preselected user)'))

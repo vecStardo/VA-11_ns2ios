@@ -465,6 +465,22 @@ void dm_dump_code_at(uint64_t addr, size_t len) {
     } else LOG("[va11] 代码区 dump 失败（基址 %p）", (void *)base);
     free(buf);
 }
+// 打印当前线程的 Horizon ThreadLocalRegion（TLR，0x200 字节）：GM 的「当前参数栈/上下文」很可能在这里，
+// 用它对比「正常取值的调用」与「0 实参调用」时的差异。TLR 指针就在宿主 TSD 槽 g_keytlr 上。
+// Dump this thread's Horizon ThreadLocalRegion (TLR, 0x200 bytes): GM's "current argument stack/context" is likely here;
+// comparing a normal call with the 0-argument call shows the difference. The TLR pointer lives in host TSD slot g_keytlr.
+extern pthread_key_t g_keytlr;
+static void dm_log_tlr(const char *tag) {
+    void *tlr = pthread_getspecific(g_keytlr);
+    if (!tlr) { LOG("[va11] TLR(%s)=NULL", tag); return; }
+    uint8_t *p8 = (uint8_t *)tlr;
+    for (int part = 0; part < 2; part++) {
+        char hx[0x100 * 3 + 1]; size_t o = 0;
+        for (int i = 0; i < 0x100; i++) o += (size_t)snprintf(hx + o, sizeof hx - o, "%02x", p8[part * 0x100 + i]);
+        hx[o] = 0;
+        LOG("[va11] TLR(%s)[%02x] %s", tag, part * 0x100, hx);
+    }
+}
 int dm_host_readable(const void *addr, size_t len);
 static void va11_array_obs(const uint64_t *regs) {
     uint64_t src = regs[1], idx = regs[2];
@@ -479,6 +495,7 @@ static void va11_array_obs(const uint64_t *regs) {
     // evolution just before the crash is visible (normal array reads vs a sudden undefined value).
     { static struct { uint64_t src; int64_t idx; uint32_t tag; } ring[16]; static int rn, rpos;
       if (tag == 2) {
+          { static int first; if (!first++) dm_log_tlr("首次取值"); }
           ring[rpos].src = src; ring[rpos].idx = (int64_t)(int32_t)idx; ring[rpos].tag = tag;
           rpos = (rpos + 1) & 15; if (rn < 16) rn++;
           return;
@@ -497,6 +514,7 @@ static void va11_array_obs(const uint64_t *regs) {
       rn = 0; rpos = 0;
     }
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
+    dm_log_tlr("失败时");
     dm_array_fail_hook();                       // 调试器断点处（lldb: breakpoint set -n dm_array_fail_hook）
     { void dm_dump_code_at(uint64_t, size_t); dm_dump_code_at(regs[30], 4u << 20); }   // DM_DUMPCODE：导出代码区 | dump the code region for offline analysis
 
