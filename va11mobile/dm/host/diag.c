@@ -450,7 +450,22 @@ static void va11_array_obs(const uint64_t *regs) {
     if (!dm_host_readable((const void *)(uintptr_t)(src + 0xc), 4)) return;
     memcpy(&tagw, (const void *)(uintptr_t)(src + 0xc), 4);
     uint32_t tag = tagw & 0xffffffu;
-    if (tag == 2) return;                       // 源是数组：正常路径 | source is an array: normal path
+    // 环形缓冲：记住最近 16 次数组取值（源标签/下标/源地址），失败时把它按时间顺序打出来，
+    // 这样能看到「崩溃前这串取值是怎么演化的」（正常数组读 vs 突然变成未定义值）。
+    // Ring buffer: remember the last 16 indexed reads (source tag/index/address) and print them in order on failure, so the
+    // evolution just before the crash is visible (normal array reads vs a sudden undefined value).
+    { static struct { uint64_t src; int64_t idx; uint32_t tag; } ring[16]; static int rn, rpos;
+      if (tag == 2) {
+          ring[rpos].src = src; ring[rpos].idx = (int64_t)(int32_t)idx; ring[rpos].tag = tag;
+          rpos = (rpos + 1) & 15; if (rn < 16) rn++;
+          return;
+      }
+      for (int i = 0; i < rn; i++) {
+          int k = (rpos - rn + i + 16) & 15;
+          LOG("[va11] 取值历史[%d] 源=%p 标签=%u 下标=%lld", i, (void *)(uintptr_t)ring[k].src, ring[k].tag, (long long)ring[k].idx);
+      }
+      rn = 0; rpos = 0;
+    }
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
     static int n; if (n++ > 40) return;
     uint64_t w0 = 0, w1 = 0, w2 = 0;
