@@ -677,3 +677,41 @@ for (UITouch *t in touches) { if (n >= 16) break; all[n++] = t; }
 另加一行 `[front] 点按抬手 → 补 A/点击 (x,y)` 日志，方便真机验证抬手链路。
 
 新 ipa：`Va11IOS-unsigned-20261018-1229-touchfix.ipa`（17,019,157 B，sha256 前 24 位 `fd7e87e6ad93743a2fdf1355`，0 项红）。
+
+## 触摸已可用；「新游戏后黑屏」根因：GM 运行时报错（2026-10-18 12:5x）
+
+用户真机（boot 4.txt）：触摸已能点进「新游戏」，随后黑屏。日志里找到 GameMaker 运行时错误：
+
+```
+ShowMessage:
+ERROR in
+action number 1
+of Other Event: User Defined 0
+for object obj_textbox:
+trying to index a variable which is not an array
+at gml_Script_textbox_loadbox
+```
+
+关键线索（模拟器复现与对照）：
+
+| 语言 | 数据 | 结果 |
+|---|---|---|
+| `DM_LANG=en-US` | 汉化补丁 game.win | 播完开场旁白后报上述 ERROR → 黑屏（`boot 4.txt` 同款） |
+| `DM_LANG=en-US` | 原版 game.win | 同样报 ERROR（说明**不是汉化补丁**的问题） |
+| `DM_LANG=ja-JP` | 汉化补丁 game.win | 110 秒无 ERROR，画面停在日文「物語は、ここから始まる。」 |
+| `DM_LANG=fr-FR` | 汉化补丁 game.win | 40 秒无 ERROR（待更长时间复测） |
+
+→ 症状与**语言相关**：文本引擎按语言装载台词文件（game.win 里能看到
+`scripts/eng/1.2/anna.txt`、`scripts/eng/1.2/pro1.txt`、`scripts/jp/testroom.txt` 等内部文件名），
+英文路径下 `textbox_loadbox` 读到的数据形状不对，索引非数组即报错。
+
+### 待办（下一步）
+1. 加文件层日志（`file_text_open_read` / 读取行数 / 首行内容），确认英文台词文件是否能打开、读到多少行；
+2. 检查 `scripts/eng/1.2/*.txt` 在 game.win 内部的文件表里是否存在（名字已看到，需确认可读）；
+3. 若英文文件确实读不到，尝试把 romfs 里根目录的 `anna.txt` / `pro1.txt`（原始 romfs 里有，我们还没解出来）
+   放到 `Documents/save/`（= `host:/`），再复测；
+4. 语言作为对照：`ja-JP` 无错误可作为「文本引擎可工作」的基线。
+
+## 附：测试脚本注意（用户指出）
+之前模拟器脚本常点屏幕中央，菜单里等于确认默认项「读取」。后续脚本一律：
+先点画面左上空白进入菜单，再点**左侧「新游戏」**（游戏坐标约 `(0.37, 0.79)`）。
