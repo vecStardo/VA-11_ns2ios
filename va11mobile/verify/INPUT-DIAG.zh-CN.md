@@ -2478,3 +2478,15 @@ NCZ 也已解成本地 NCA（585 MB）。但 NCA 是加密的（header 用 heade
 
 ⇒ **中英双语都跑通了**：App 已内置 `eng/chn/jp` 三套台词，首次启动自动解出，语言在游戏内的
 LANGUAGE SELECT 界面选择即可。
+
+## 长时运行 + 多段对话验证（2026-10-19 18:5x）
+
+用正式补丁数据（prod 版：同步读 host:/，无调试输出）在模拟器上连续运行约 2 分钟，
+期间多次点按对话框推进：
+
+- **ERROR=0**（全程无报错）；
+- 截图 `out/play_long.png`：已推进到多行对话
+  `Anna: Come on Jo, Look sharp! The game's starting and the player needs a good first impression of its main character.`
+  —— 说明对话队列、逐字/多行排版、角色立绘（Jill）、UI 都正常。
+
+⇒ 移植的可玩性验证到这个程度：启动 → 语言选择 → 新游戏 → 酒吧场景 → 多段对话推进，均正常。
