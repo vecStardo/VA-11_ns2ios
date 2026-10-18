@@ -62,7 +62,10 @@ uint64_t resolve_import(module_t *m, const char *name) {
     return (uint64_t)hlecount_wrap("STUB", name, (void *)&unimpl_stubs[k]);
 }
 
-void stubs_report(void) { LOG("stubs=%u", g_nstub); }
+void stubs_report(void) {
+    LOG("stubs=%u", g_nstub);
+    for (unsigned k = 0; k < g_nstub; k++) LOG("  桩 %u：%s", k, g_stub_name[k] ? g_stub_name[k] : "?");
+}
 
 // ---------- 宿主门分派 ----------
 // 改写器把每处 svc #n / mrs cntpct 换成调用 dm_gate；这里按门块返回点（绝对地址）记住它原来是什么。

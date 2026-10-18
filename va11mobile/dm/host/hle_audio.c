@@ -16,6 +16,7 @@
 #include <dispatch/dispatch.h>
 #include <stdatomic.h>
 #include <unistd.h>
+#include <math.h>
 
 enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1, RATE = 48000 };
 
@@ -38,7 +39,7 @@ typedef struct {
     pthread_t notify_th; _Atomic int notify_run, notify_pending, notify_armed;
     _Atomic uint64_t notify_ns;        // 最近一次「有缓冲释放、要通知」的时刻（量通知线程被叫醒的延迟） | Time of the most recent "buffer released, needs notifying" event (to measure the notification thread's wake-up latency)
     int dry;                           // 这次声卡回调里待播队列空了（在播放态）= 一次欠载（断音） | The pending playback queue was empty in this audio callback (while playing) = one underrun (audio dropout)
-    _Atomic uint64_t st_append, st_bytes, st_dry, st_calls, st_peak;  // 音频统计（诊断「爆音」用） | audio stats (for diagnosing distortion)
+    _Atomic uint64_t st_append, st_bytes, st_dry, st_calls, st_peak, st_clip;  // 音频统计（诊断「爆音」用） | audio stats (for diagnosing distortion)
     _Atomic int st_run;                 // 统计线程运行标志 | stats thread run flag
     pthread_t st_th;                    // 统计线程（每个输出一个） | stats thread (one per output)
 } aout;
@@ -113,6 +114,11 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
         gbuf *b = a->q[qh & (QMAX - 1)];
         uint64_t k = b->size - a->pos; if (k > n) k = n;
         memcpy(dst, (uint8_t *)b->ptr + a->pos, k);
+        {   // 满刻度样本计数：真机若「爆」，先看是不是数据就削顶了 | count full-scale samples: if the device "crackles", check whether the data already clips
+            const int16_t *pcm = (const int16_t *)((const uint8_t *)b->ptr + a->pos); size_t ns = (size_t)k / 2; uint64_t c = 0;
+            for (size_t i = 0; i < ns; i++) if (pcm[i] >= 32767 || pcm[i] <= -32767) c++;
+            if (c) atomic_fetch_add_explicit(&a->st_clip, c, memory_order_relaxed);
+        }
         dst += k; n -= k; a->pos += k;
         if (a->pos >= b->size) {
             uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
@@ -147,6 +153,20 @@ static void downmix51(const int16_t *in, int16_t *out, unsigned frames) {
 static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
     (void)f; (void)ts; (void)bus; (void)frames;
     aout *a = ctx;
+    {   // 自检音：DM_AUDIO_TESTTONE=1 → 440 Hz 正弦（用来把「数据/格式问题」与「设备/会话问题」分开）
+        static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_TESTTONE"); on = e && atoi(e); }
+        if (on) {
+            static double ph;
+            int16_t *o = bl->mBuffers[0].mData; size_t n = bl->mBuffers[0].mDataByteSize / 2;
+            for (size_t i = 0; i + 1 < n; i += 2) {
+                int16_t v = (int16_t)(12000.0 * sin(ph));
+                o[i] = v; o[i+1] = v;
+                ph += 2.0 * 3.14159265358979323846 * 440.0 / 48000.0;
+                if (ph > 2.0 * 3.14159265358979323846) ph -= 2.0 * 3.14159265358979323846;
+            }
+            return noErr;
+        }
+    }
     atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed);
     a->dry = 0;
     if (!a->mix) pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
@@ -217,9 +237,10 @@ static void *audio_stats(void *p) {
         uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
         if (ap != last_append || cl != last_calls) {
-            LOG("audio 统计 out=%p ch=%d：追加 %llu 块 / %.1f KiB，回调 %llu 次，欠载 %llu 次，峰值 %llu，队列 %u",
+            LOG("audio 统计 out=%p ch=%d：追加 %llu 块 / %.1f KiB，回调 %llu 次，欠载 %llu 次，峰值 %llu，满刻度 %llu，队列 %u",
                 (void *)a, a->ch, (unsigned long long)ap, (by - last_bytes) / 1024.0,
-                (unsigned long long)cl, (unsigned long long)dr, (unsigned long long)pk, qt - qh);
+                (unsigned long long)cl, (unsigned long long)dr, (unsigned long long)pk,
+                (unsigned long long)atomic_load_explicit(&a->st_clip, memory_order_relaxed), qt - qh);
             last_append = ap; last_bytes = by; last_calls = cl; last_dry = dr;
         }
     }
