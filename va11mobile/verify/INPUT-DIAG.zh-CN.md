@@ -2024,3 +2024,26 @@ trying to index a variable which is not an array
    2 次出现大概率就是「一次写 + 一次读」，能直接看到**写的那个上下文是哪个脚本/事件**；
 2. 如果字节码不好解，就走用户提到的 RE 工具（UndertaleModTool 能直接反编译 GML），
    导出 `gml_Script_textbox_create` / `obj_textbox` Create / `gml_Script_textbox_loadbox` 三处代码对照。
+
+## 继续解析 data.win：对象表/名字引用方式（2026-10-19 09:1x）
+
+- `OBJT`：`'OBJT'` + size + `count=740` + 偏移数组；第一个对象条目首字段像**字符串绝对地址**
+  （`0xb480e1` → 内容是 `'bc4'`），说明 console 版 data.win 里名字多用**绝对地址**而非字符串索引引用；
+- `obj_textbox` 名字串在 `0xb3fa7b`（长度字段 `0xb3fa77`），它出现在 `STRG` 的偏移数组里（`0xb3053c`）
+  以及 `TXTR` 区一处（`0xf910358`）；
+- 但对象表里对该名字串的引用用的是**字符串索引 2422**（在 `0x91e84c` 处出现），说明「对象名 → 字符串」这一层
+  用的是索引，与 `VARI`/`CODE` 里用不同编号空间，需要逐表对齐才能可靠反编译。
+
+另外在「变量未设置」报错点加了**全寄存器 dump**（OBS_VARREAD），实测现场：
+
+```
+x0=16d999fa8 x1=109322556 x2=34088f210 x3=340898f60 x4=18c65(=101477) ...
+x19=0x3f814bef0 x21=… sp/fp: x28=0x109af9f0c x29=0x16d999ed0 x26=0x109af5e62 x25=0x340898f60
+```
+
+（`x4/w20 = 101477` 就是实例 id，`x3` 指向 `obj_textbox` 字符串、`x2` 指向 `input_text` 字符串。）
+
+### 下一轮
+1. 用「对象索引 → OBJT 条目 → 变量定义表」这条链，确认 `obj_textbox` 实例的变量表里 `input_text` 的槽位；
+2. 或者（更快）请用户用 **UndertaleModTool** 反编译导出三处 GML：
+   `gml_Script_textbox_create`、`obj_textbox` 的 Create 事件、`gml_Script_textbox_loadbox`。

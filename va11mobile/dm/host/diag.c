@@ -744,6 +744,36 @@ static void va11_varread_obs(const uint64_t *regs) {
     const char *oname = (const char *)(uintptr_t)regs[3];
     if (vname && dm_host_readable(vname, 1) && dm_host_readable(vname, 64)) { } else vname = "?";
     if (oname && dm_host_readable(oname, 1) && dm_host_readable(oname, 64)) { } else oname = "?";
+    // 变量槽指针：报错代码用 x28 指向「值」，类型标签在 [x28-4]；为 0xffffff 即「未设置」。
+    // 把 x28 前后若干槽 dump 出来，看同一实例的其它变量是否已初始化（判断是 Create 事件没跑，
+    // 还是只有 input_text 这一个没被赋）。
+    // Variable slot pointer: the raise code uses x28 for the value with the type tag at [x28-4] (0xffffff = unset).
+    // Dump the slots around x28 to see whether the other variables of the same instance are initialised (which tells us
+    // whether the Create event never ran, or only input_text was never assigned).
+    { uint64_t slot = regs[28];
+      if (slot > 0x100) {
+          LOG("[va11] 变量槽 x28=%p 标签=%#x", (void *)(uintptr_t)slot,
+              dm_host_readable((const void *)(uintptr_t)(slot - 4), 4) ? *(const uint32_t *)(uintptr_t)(slot - 4) & 0xffffffu : 0xdeadbeefu);
+          for (int i = -4; i <= 4; i++) {
+              uint64_t a = slot + (int64_t)i * 16;
+              uint8_t vb[16]; vm_size_t vg = 0; uint32_t tag = 0xdeadbeef;
+              if (vm_read_overwrite(mach_task_self(), (vm_address_t)(a - 4), 4, (vm_address_t)&tag, &vg) == KERN_SUCCESS) tag &= 0xffffffu;
+              if (vm_read_overwrite(mach_task_self(), (vm_address_t)a, 16, (vm_address_t)vb, &vg) == KERN_SUCCESS) {
+                  LOG("[va11]   槽%+d @%p 标签=%#x 前8字节=%016llx%016llx", i, (void *)(uintptr_t)a, tag,
+                      (unsigned long long)*(const uint64_t *)vb, (unsigned long long)*(const uint64_t *)(vb + 8));
+              }
+          }
+      } }
+    { char rb[512]; size_t ro = 0;
+      for (int i = 0; i <= 30 && ro + 24 < sizeof rb; i++) {
+          if (!regs[i]) continue;
+          ro += (size_t)snprintf(rb + ro, sizeof rb - ro, "x%d=%llx ", i, (unsigned long long)regs[i]);
+      }
+      rb[ro] = 0;
+      LOG("[va11] 未设置现场寄存器：%s", rb);
+      LOG("[va11] 未设置现场 sp/fp：x28=%p x29=%p x27=%p x26=%p x21=%p x25=%p",
+          (void *)(uintptr_t)regs[28], (void *)(uintptr_t)regs[29], (void *)(uintptr_t)regs[27],
+          (void *)(uintptr_t)regs[26], (void *)(uintptr_t)regs[21], (void *)(uintptr_t)regs[25]); }
     LOG("[va11] 变量未设置：对象=%s 变量=%s 索引 w4=%u w5=%u（x20=%llu x22=%llu x23=%llu）",
         oname, vname, (unsigned)regs[4], (unsigned)regs[5],
         (unsigned long long)regs[20], (unsigned long long)regs[22], (unsigned long long)regs[23]);
