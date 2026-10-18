@@ -119,6 +119,10 @@ void front_save_failed(int err) {
 
 // ---------- EAGL 视图：多点触摸 → dm_touch_set ----------
 static void tap_a_pulse(void);   // 点按补 A（视图与测试脚本共用）| tap-to-A, shared by the view and the test hooks
+// 带坐标版本：帧同步鼠标点击要用真实落点（菜单项不在屏幕中心）；无坐标版本按屏幕中心补。
+// Coordinate-carrying variant: the frame-synced mouse click must use the real hit point (menu items are not at the
+// screen centre); the no-argument variant pulses at the centre.
+static void tap_a_pulse_at(float nx, float ny);
 static uint64_t pad_mask_of(const char *nm);   // 键名→掩码（DM_TEST_* 钩子用）| key name -> mask (used by the DM_TEST_* hooks)
 
 @interface Va11GLView : UIView
@@ -152,9 +156,10 @@ static uint64_t pad_mask_of(const char *nm);   // 键名→掩码（DM_TEST_* �
     // 触屏优先：按下 = 鼠标点 + 内部补两拍 A（不等抬手、也不看按住时长——鼠标按住超过 0.35 s 也算点按）。
     // Touch-first: a press = mouse click + two internal A pulses (no release/hold-duration gate: holding the mouse for
     // longer than 0.35 s still counts as a tap).
-    static int g_was_down;
+    static int g_was_down; static float g_last_nx = 0.5f, g_last_ny = 0.5f;
+    if (n > 0) { g_last_nx = ts[0].x; g_last_ny = ts[0].y; }
     if (n > 0 && !g_was_down) g_was_down = 1;
-    else if (n == 0 && g_was_down) { g_was_down = 0; tap_a_pulse(); }
+    else if (n == 0 && g_was_down) { g_was_down = 0; tap_a_pulse_at(g_last_nx, g_last_ny); }   // 用真实落点补点击/A | pulse the click/A at the real hit point
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)touches; [self pushTouches:event.allTouches]; }
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)touches; [self pushTouches:event.allTouches]; }
@@ -310,14 +315,16 @@ static void hover_schedule(void) {
 // 0.3 s apart, 180 ms each: VA-11 prompts like "press A to start" only accept gamepad A, and touch taps are the primary input.
 void dm_kbd_press(int code, int ms);   // hle_hid.c：键盘注入（VA-11 runner 用键盘轮询）| keyboard injection (the VA-11 runner polls the keyboard)
 
-static void tap_a_pulse(void) {
+static void tap_a_pulse(void) { tap_a_pulse_at(0.5f, 0.5f); }
+
+static void tap_a_pulse_at(float nx, float ny) {
     // 抬手之后才补 A：按住期间给 A 会被游戏丢掉（实测「按 A 键开始游戏」不动）；与按住时长无关。
     // Pulse A only after the touch is released: an A press while the finger/mouse is still down is dropped by the game
     // (observed on the "press A to start" screen); independent of how long the press was held.
     // 6 拍 A（按下 120 ms、间隔 250 ms，共约 2 s）：标题提示会闪烁/存在状态窗口，单拍容易错过，连拍更稳。
     // Six A pulses (120 ms down, 250 ms apart, ~2 s total): the title prompt blinks / has state windows, so a single pulse
     // is easy to miss; a short burst is robust.
-    { extern void dm_click_request(float, float); dm_click_request(0.5f, 0.5f); }   // 帧同步鼠标点击（菜单点选）| frame-synced mouse click (menu selection)
+    { extern void dm_click_request(float, float); dm_click_request(nx, ny); }   // 帧同步鼠标点击（菜单点选用真实落点）| frame-synced mouse click (real hit point for menu selection)
     dm_kbd_press(0x28, 220);   // Enter（HID 0x28）：菜单/对话确认 | Enter (HID 0x28): menu/dialogue confirm
     dm_kbd_press(0x2C, 220);   // Space（HID 0x2C）：推进对白 | Space (HID 0x2C): advance dialogue
     for (int k = 0; k < 6; k++) {
@@ -362,8 +369,10 @@ static void step_schedule(void) {
                 dm_touch td = {0, 0.5f, 0.5f};
                 if (strcmp(op, "click") == 0) { float x = 0, y = 0; if (sscanf(arg, "%f,%f", &x, &y) == 2) { td.x = x; td.y = y; } }
                 LOG("[test] 步:%s (%.3f,%.3f)", op, td.x, td.y);
-                dm_touch_set(&td, 1); usleep(65000); dm_touch_set(NULL, 0);   // 真机「轻触」更短；120 ms 时菜单无反应 | a real "tap" is shorter; 120 ms got no menu reaction
-                tap_a_pulse();
+                // 250 ms 按住：GM 菜单用边沿检测（device_mouse_check_button_pressed），65 ms / 120 ms 可能整段落在两拍之间
+                // 250 ms hold: GM menus use edge detection (device_mouse_check_button_pressed); 65/120 ms can fall between two ticks
+                dm_touch_set(&td, 1); usleep(250000); dm_touch_set(NULL, 0);
+                tap_a_pulse_at(td.x, td.y);   // 点按与真实触屏同一路径，并带真实落点 | same path as a real touch, carrying the real hit point
             }
             else if (strcmp(op, "key") == 0) { uint64_t m = pad_mask_of(arg); if (m) { pad_press(m); usleep(120000); pad_release(m); } }
             else LOG("[test] 步:未知 %s", t);

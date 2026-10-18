@@ -154,3 +154,72 @@ game.win 的 GML 里有一整组 Switch 专用封装：
 - 该提示可能只吃 A（游戏数据里也有「轻触」文案，但逻辑另说）。
 
 下一步：把 finger_id 改成 1、把点按改短（60–80 ms），并对照真机 attributes 语义再试。
+
+## 单步注入钩子验收 + 按下沿诊断（2026-10-18 10:4x）
+
+`DM_TEST_STEP` 钩子（hover→click→A 单步脚本，不依赖窗口焦点）本轮做了两处修正并实测：
+
+1. **点击带真实落点**：原来 `tap_a_pulse()` 里的帧同步点击固定报 `(0.5,0.5)`，菜单项不在屏幕中心；
+   现在拆成 `tap_a_pulse_at(nx,ny)`，产品触屏路径用真实触点坐标，脚本 `click:x,y` 也带各自坐标。
+2. **按下沿诊断不再被节流吞掉**：鼠标服务日志原来每秒最多一条，而合成点击的按下沿只维持 2–3 拍（~33 ms），
+   会被整段漏掉。现在 `button 0→1` 的跳变**无条件记一行**。
+
+实测日志（模拟器 VA11-User，`DM_TEST_STEP='at:7000;hover:0.5,0.5;wait:300;click:0.5,0.5;…'`）：
+
+```
+[dm] [test] 单步脚本 at:7000;hover:0.5,0.5;wait:300;click:0.5,0.5;wait:1500;key:A;wait:1000;click:0.5,0.62
+[dm] [test] 步:悬停 (0.500,0.500)
+[dm] [hid-diag] 鼠标服务 x=640 y=360 button=0 have=1
+[dm] [test] 步:click (0.500,0.500)
+[dm] [hid-diag] 鼠标按下沿 服务 x=640 y=360 button=1 have=1     ← 帧同步点击确实被服务出去
+[dm] [hid-diag] 服务 id=32 style=2 buttons=0x1 (km=0)            ← 手柄 A（掌机 id=32/style=2）
+[dm] [test] 步:click (0.500,0.620)
+[dm] [hid-diag] 鼠标按下沿 服务 x=640 y=446 button=1 have=1
+```
+
+分辨率/坐标换算正确（0.5,0.62 → 640,446 面板坐标），单步钩子可用 → `todo_82fafed088984b82af2c932f` 收口。
+
+### 仍未解决：标题「轻触或按 A 键开始游戏」不消失
+
+同一次运行截图（`out/prog_26.png`）停在标题画面，提示仍是「轻触或按 A 键开始游戏」；
+A 按住数秒（`buttons=0x1` 连续多秒）与带落点点击都没有推进。已排除：
+- 传输层：鼠标按下沿、手柄 A、键盘轮询都被服务出去（有日志）；
+- 单帧边沿被吃：A/click 都是多拍连续；
+- 复数接口缺失：`GetNpadStates`（复数）从未被调用（未实现导入只有 1 条且是 `nnosGetDefaultUserExceptionStackForApplication`），
+  说明 runner 只走单数 `GetNpadState`。
+
+### 三个子智能体的公开资料调研（本轮）
+
+1. **同路线衍生项目 `seedds/nxnative`**（复用 d2r-mobile 的 NSO rewriter + Horizon HLE + NVN→Metal，已跑通 6 款 Switch 游戏）：
+   hid 层补全**全部 Npad 样式** + `GetNpadStates`（复数，伪历史：当前状态重复 n 份、sampling 连续）+ **按下沿锁存**；
+   触屏只做虚拟手柄映射，不提供 touchscreen/mouse/keyboard。
+2. **d2r-mobile 自己踩过同构的坑**：`hle_touch.c` 手指状态机（EMPTY/DOWN/LIFTED，先报 Start、抬起补报 End）+
+   `hle_hid.c` press-edge latch（注释写明「真机 0.09 ms 的按键整个丢失→点了没反应」）——我们已照搬触屏状态机，按键锁存尚未照搬。
+3. **GameMaker 侧资料**：Switch runner 默认只映射**掌机自带手柄**，分离 Joy-Con 要游戏侧自建对象轮询（GBAtemp 移植教程）；
+   触屏走 `device_mouse_check_button*`；`keyboard_check_pressed` 只在跳变帧为真；PC 版有作者实测「合成鼠标点击无效」。
+4. **汉化补丁**：Switch 版补丁署名 dkdjrj、标称只支持 1.0.1，公开渠道没有任何文件清单/game.win 分析；
+   GameMaker 主机版 `game.win` 是 UMT 从 `data.win` 转出的自包含容器 → 补丁 game.win 可能是二手重建物（**假设，未验证**）。
+
+### 下一步（按优先级）
+
+1. **照搬 nxnative 的按键按下沿锁存**（前端按下 → 锁存到游戏下一次读，读完清）：与现有帧同步点击队列叠加，
+   解决「按下沿刚好落在两次采样之间」这一类。
+2. **补 `GetNpadStates`（复数）+ 伪历史**：即使本轮未见调用，显式实现后可排除「runner 在别的路径用它」的可能，
+   且 n=2 时第 [1] 项可作为上一拍（GM 边沿检测习惯）。
+3. **换未汉化原版 game.win 跑同一 HLE**：能进菜单即锁定汉化补丁重建的问题；仍不能进则问题在 HLE 输入层。
+4. **焦点/暂停门控排查**：确认 `nn::oe::GetOperationMode`=Handheld、`GetFocusState`=InFocus、
+   `nn::oe::GetResumeFlag` 等是否被调用/取值是否正确（GM 用 `window_has_focus` 吞输入）。
+
+## 按 HID 规范修正两个结构体错误（2026-10-18 11:0x）
+
+对照 switchbrew / libnx 的 HID 结构定义，`hle_hid.c` 里两处**写错**已修正：
+
+1. **KeyboardState 长度是 0x30，不是 0x40**（`u64 sampling; u64 modifiers; u64 keys[4]`，**没有 attributes 字段**）。
+   原实现 `memset(p, 0, 0x40)` 并写 attributes，会写穿调用方缓冲区 → 已改为 0x30。
+2. **MouseState.attribute 位定义**：bit0 = Transferable、bit1 = IsConnected。
+   原实现只写 `1`（= 可传输但**未连接**），引擎普遍先判 IsConnected 再取按键 → 触摸合成的鼠标会被整只忽略。
+   已改为 `have ? 0x3 : 0`（Transferable | IsConnected）。
+
+验证（模拟器 VA11-User，三次 `click:0.5,0.5`）：按下沿日志正常
+（`鼠标按下沿 服务 x=640 y=360 button=1 have=1`），键盘轮询与手柄 A 不受影响；
+标题画面仍未推进（下一步按调研建议补「按下沿锁存」与 focus/许可门控排查）。

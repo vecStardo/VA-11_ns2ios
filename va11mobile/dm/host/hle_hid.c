@@ -544,15 +544,26 @@ static void mouse_fill(MouseStateV *s, int *first) {
     s->dy = (py < 0 || !*first) ? 0 : y - py;
     px = x; py = y; *first = 0;
     s->button = down ? 1u : 0u;
-    s->attr = have ? 1u : 0u;
-    {   // 诊断：鼠标服务的状态（有触点或按下时每秒最多一条）| diagnostic: served mouse state (one line per second at most while touched/pressed)
-        static int diag; static uint64_t last_ns;
+    // nn::hid::MouseAttribute：bit0 = Transferable、bit1 = IsConnected。只写 bit0 等于「可传输但未连接」，
+    // 引擎层普遍先判 IsConnected 再取按键 → 触摸合成的鼠标会被整只忽略。两个位一起给。
+    // nn::hid::MouseAttribute: bit0 = Transferable, bit1 = IsConnected. Writing bit0 alone says "transferable but not
+    // connected"; engine layers check IsConnected before reading buttons, so the touch-synthesised mouse was ignored.
+    s->attr = have ? 0x3u : 0u;
+    {   // 诊断：鼠标服务的状态。按下沿无条件记一行（按键只维持两三拍，每秒一条的节流会漏掉按下沿）；
+        // 其余（悬停/按住）每秒最多一条。| diagnostic: served mouse state. The press edge is logged unconditionally (the
+        // button is only held for two or three ticks, so a one-per-second throttle would swallow it); hover/hold at most
+        // one line per second.
+        static int diag; static uint64_t last_ns; static uint32_t last_btn;
         if (!diag) { const char *e = getenv("DM_HID_DIAG"); diag = (e && *e) ? 1 : -1; }
         uint64_t t = now_ns();
-        if (diag == 1 && (have || down) && t - last_ns > 1000000000ull) {
+        if (diag == 1 && s->button && !last_btn) {
+            last_ns = t;
+            LOG("[hid-diag] 鼠标按下沿 服务 x=%d y=%d button=%u have=%d", x, y, s->button, have);
+        } else if (diag == 1 && (have || down) && t - last_ns > 1000000000ull) {
             last_ns = t;
             LOG("[hid-diag] 鼠标服务 x=%d y=%d button=%u have=%d", x, y, s->button, have);
         }
+        last_btn = s->button;
     }
 }
 HLE_FORCE("_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi", "VA-11：鼠标状态 ← 触屏面（点选玩法要能点）", int32_t, h_hid_GetMouse, void *out, int32_t n) {
@@ -612,14 +623,15 @@ HLE_FORCE("_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE", "VA-11：键盘�
     static uint64_t samp;
     uint64_t t = now_ns();
     if (t > atomic_load(&g_kbd_until_ns)) kbd_clear();
-    // 布局：u64 sampling; u64 modifiers; u8 keys[32]（256 位 HID 键码位图）; u32 attributes; 其余补 0（共 0x40）
-    // Layout: u64 sampling; u64 modifiers; u8 keys[32] (256-bit HID keycode bitmap); u32 attributes; rest zero (0x40 total)
+    // 布局（switchbrew / libnx）：u64 sampling; u64 modifiers; u64 keys[4] = 0x30，**没有 attributes**。
+    // 原来按 0x40 清零并写 attributes 字段，会写穿调用方缓冲区（真机结构只有 0x30）——已修正。
+    // Layout (switchbrew / libnx): u64 sampling; u64 modifiers; u64 keys[4] = 0x30 with NO attributes field.
+    // The old code zeroed 0x40 and wrote an attributes field, overflowing the caller's buffer (the real struct is 0x30).
     uint8_t *p = (uint8_t *)out;
     if (p) {
-        memset(p, 0, 0x40);
+        memset(p, 0, 0x30);
         uint64_t sm = ++samp; memcpy(p, &sm, 8);
         for (int i = 0; i < 4; i++) { uint64_t v = atomic_load(&g_kbd_bits[i]); memcpy(p + 16 + i * 8, &v, 8); }
-        uint32_t attr = 1u;
         kbd_test_window(p);
     }
     static int logged; if (!logged++) LOG("[hid-diag] 游戏开始轮询键盘状态（GetKeyboardState）");
