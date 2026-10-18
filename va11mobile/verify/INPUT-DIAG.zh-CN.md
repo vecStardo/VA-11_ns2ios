@@ -738,3 +738,15 @@ at gml_Script_textbox_loadbox
 1. **先用原版英文通关/验证**：`game.win` 换回原版（iCloud `Va11IOS-data-EN/game.win`，sha256 `e860d56e…`）；
 2. **补齐版本**：找 1.2.3.0 对应的中文补丁，或改用 1.0.1/1.0.0 本体 + 现补丁（本体版本必须与补丁一致）；
 3. 若坚持在这个补丁上修：需要反查 `textbox_loadbox` 期望的数组（YYC 原生码，成本高，不建议优先）。
+
+## 原版英文数据跑通开场（2026-10-18 13:2x）
+
+把 `game.win` 换回原版（`e860d56e…`）后，用键盘 Enter 连续推进，模拟器完整走过：
+
+- 标题「Good Bye Miss Bartender 1.2.3.0 / Tap or press A to start」；
+- 开场旁白（英文）；
+- **酒吧内景旁白**「…but that's a mouthful, so we just call it Valhalla.」（`out/evidence_en_bar_narration.png`）；
+- 全程 **0 条 GM 报错**（`out/long_boot.txt`），游戏循环、渲染、音频都正常。
+
+对照汉化补丁数据同一时刻：播完开场旁白后 `obj_textbox` 报错 → 黑屏。
+→ 再次确认：**移植可用，问题在补丁与本体版本不匹配**。
