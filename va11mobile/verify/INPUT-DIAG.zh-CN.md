@@ -1964,3 +1964,32 @@ Waifu Preferences.txt            （38 字节）
 1. 在模拟器上把「LOAD 列表 → 选中 1 号槽 → 确认载入」的点击顺序试出来（目前已经能进到 SAVE/LOAD 界面）；
    成功载入后即可**进入酒吧场景**，验证渲染/对话/操作是否全部可用；
 2. 对照那条 New Game 路径，定位 `textbox_create` 为什么没给 `input_text` 赋值。
+
+## 关键更正：报错不只发生在「新游戏」——**任何 textbox 创建都会触发**（2026-10-19 06:4x）
+
+在 LOAD 界面试着按「确认」键（key:40 = Return）后，屏幕变黑并报同样的错：
+
+```
+ERROR in
+action number 1
+of Other Event: User Defined 0
+for object obj_textbox:
+
+trying to index a variable which is not an array
+[va11] 非数组索引：源描述符 0x3f804e950 标签=16777215 下标=0 目标=0x3f814bef0 …
+```
+
+注意事件名是 **Other Event: User Defined 0**（不是我们之前以为的 10）。
+
+⇒ 修正结论：**不是「New Game 路径特有」，而是任何一次创建 `obj_textbox` 都会在本应读取
+`input_text` 的地方拿到未定义值**。LOAD 界面的确认动作会弹一个确认用的 textbox，所以同样崩。
+
+这意味着从移植的第一天起，**任何对话/提示文本都没能显示过**，只有标题菜单（不含 textbox）能正常渲染——
+与「读档界面正常、一按确认就黑屏」完全一致。
+
+### 下一轮
+1. 追 `input_text` 到底应该由谁设置：`obj_textbox` 的 Create 事件？还是调用方用
+   `variable_instance_set(id, "input_text", …)` 这类**字符串变量名**接口写入？
+   （后者依赖 GM 的实例变量表，若我们移植里那套表/接口有问题，就会「设置静默失败」→ 读的时候报未设置）
+2. 用观测门在 `main+0x23014`（变量未设置报错点）**保留全寄存器**，同时打印 `x21`（运行时上下文）
+   和 `x2/x3` 的字符串，确认它在报错时用的实例/变量索引来源。
