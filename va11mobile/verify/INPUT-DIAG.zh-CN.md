@@ -2127,3 +2127,23 @@ gml_Script_textbox_create  条目 0xaea51c len=164  locals=2 args=0  → 字节�
 1. 直接照 libgm 的 `variable.rs` 实现解析（它支持 WAD15+ 的变长条目），把 2892 个变量的名字全部解出来；
 2. 用正确的变量名重新跑 `tools/gml_decode.py`，把 `textbox_create` 的 `with` 块里每条赋值念出来 ——
    这一步做完就能确认 `input_text` 是在哪里被赋值的。
+
+## VARI 解开了：20 字节条目 + 名字是「字面量指针」（2026-10-19 12:1x）
+
+对照 libgm 的 `variable.rs` 后终于对上：
+
+- `VARI` = `'VARI'` + size + **ModernHeader（12 字节）** + **2892 条 20 字节定长条目** + 出现位置数组；
+- 每条：`{name_ptr, instance_type, variable_id, occurrence_count, first_occurrence}`；
+- `name_ptr` 不是索引、也不是「长度前缀的起点」，而是**直接指向字符数据的指针**
+  （STRG 里的字符串是 `u32 长度 + 字符`，这里给的地址比长度字段多 4 字节）。
+
+按此解析：**2892 个变量名全部解出**，且 `input_text` 的**变量 id = 1954**。
+样例：`['prototype', '@@array@@', 'arguments', 'arguments', 'shooterdone', …]`。
+
+同时 `tools/gml_decode.py` 已换成这套解析（变量名现在能正确显示，例如 `mod_ba` 这类真实变量名出现了）。
+
+### 仍差的最后一步
+字节码里「变量引用」的第二个 4 字节字格式还没完全对上 —— 出现 `0xA0000008`、`0xA0000070`、`0xA00084A8`
+这类以 `0xA0` 开头的字，形态像是 `{u8 标志, u24 值}`，与 libgm 的 `read_variable`（读一个 u32 后查 occurrence 表）不同，
+说明这个版本把「实例类型 + 变量 id」压进了同一个字。下一轮把它解出来，就能正确念出 `textbox_create` 的
+`with` 块里每条赋值的变量名。

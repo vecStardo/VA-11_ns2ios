@@ -12,11 +12,23 @@ def s_by_idx(i):
     if ln<=0 or ln>200: return '?'
     try: return d[o+4:o+4+ln].decode('utf-8','replace')
     except Exception: return '?'
-vari=0xafaba0; vsize=146920
+def s_ptr(p):
+    if p<=0 or p>=len(d): return '<bad>'
+    out=bytearray()
+    for i in range(120):
+        if p+i>=len(d): break
+        c=d[p+i]
+        if c<0x20 or c>0x7e: break
+        out.append(c)
+    return out.decode('ascii','replace')
+vari=0xafaba0
+_vcnt=struct.unpack_from('<I',d,vari+8)[0]
 names=[]
-off=vari+4; n=(vsize-4)//12
-for i in range(n):
-    names.append(s_by_idx(struct.unpack_from('<I',d,off)[0])); off+=12
+_pos=vari+20
+for i in range(_vcnt):
+    name,it,vid,occ,first=struct.unpack_from('<IIIII',d,_pos)
+    names.append(s_ptr(name)); _pos+=20
+
 def code_bytes(entry):
     name,ln,loc,arg,f1,_=struct.unpack_from('<IIHHII',d,entry)
     if f1>=0x80000000: f1-=0x100000000
