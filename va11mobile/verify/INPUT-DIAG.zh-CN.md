@@ -898,3 +898,38 @@ at:22000;kbdrep:40,40,2500,180
 
 → 说明真机「英文标题 + 点 New Game 后黑屏」很可能不是版本不匹配，而是**上一次汉化版运行留下的存档/设置数据**
 被 1.2.3.0 读取时触发了 `textbox_loadbox`。**处理：清掉 save 目录里除 game.win 之外的所有东西再启动。**
+
+## 用户在模拟器复现黑屏 → 拿到完整调用栈（2026-10-18 16:1x）
+
+用户在模拟器上亲手点 New Game，复现黑屏；`Documents/boot.txt` 里拿到**完整 GM 调用栈**：
+
+```
+ERROR in action number 1 of Other Event: User Defined 0 for object obj_textbox:
+trying to index a variable which is not an array
+at gml_Script_textbox_loadbox
+stack frame is
+gml_Script_textbox_loadbox
+gml_Object_obj_textbox_Other_10
+called from - gml_Script_textbox_create
+gml_Script_day0control
+gml_Script_daycontrol
+gml_Object_dialog_control_Create_0
+```
+
+即：**第一天剧情 `daycontrol` 创建对话框时**，`textbox_create → textbox_loadbox` 里索引了非数组。
+之前的「原版数据 0 报错」跑法（长按/连按 Enter）**根本没走到这个场景**（日志里没有 `dialog_control`），
+所以那条结论作废——这不是汉化补丁或存档的问题，而是**点按进入新游戏后、第一个对话框创建时的移植侧问题**。
+
+同时确认：我们的合成点击路径（`DM_TEST_STEP click`）在模拟器里仍落到 LOAD，无法复现该场景；
+只有**真实触摸**能走到 day0 对话框。所以修复验证必须靠真机/真实触摸。
+
+### 本轮改动（降低点按强度，排除「补键过猛」）
+- 撤掉上一轮「抬手后按住落点 1.3 s」；
+- 补键从 **6 拍 A** 降到 **2 拍 A**（间隔 0.5 s）：真实玩家一次点按只该产生一次确认，
+  连拍容易在对话框创建前后把确认/状态吃掉。
+
+新包：`Va11IOS-unsigned-20261018-1401-gentletap.ipa`（17,019,700 B，sha256 前 24 位 `dfce00b102494c4dbfa451cb`，0 项红）。
+
+### 下一步（若仍黑屏）
+需要在 `textbox_loadbox` 失败点取证：要么在 HLE 里拦截并打印触发它的**输入状态**（鼠标按下/键盘/触屏），
+要么导出 `game.win` 里 `textbox_loadbox` 的 YYC 原生码反查它索引的全局数组来源。

@@ -354,20 +354,6 @@ static void tap_a_pulse_at(float nx, float ny) {
     // Six A pulses (120 ms down, 250 ms apart, ~2 s total): the title prompt blinks / has state windows, so a single pulse
     // is easy to miss; a short burst is robust.
     { extern void dm_click_request(float, float); dm_click_request(nx, ny); }   // 帧同步鼠标点击（菜单点选用真实落点）| frame-synced mouse click (real hit point for menu selection)
-    // 抬手后把落点重新按住 1.3 s：runner 的 device_mouse 只在触屏有活动触点时才停在该位置，
-    // 一抬手鼠标位置就回到默认点，随后的 A 又会确认默认项（读取/Load）。按住落点再补 A，
-    // 确认的就是落点上那一项（实测这是「点 New Game 却进读取」的最后一块）。
-    // Re-press the hit point for 1.3 s after the lift: the runner's device_mouse only stays at that position while a
-    // touchscreen point is active; on lift it snaps back to the default point, so the later A confirms the default item
-    // (Load). Holding the hit point while pulsing A makes the confirmation land on the item under the tap (measured:
-    // this is the last missing piece of "tap New Game but end up in Load").
-    {
-        dm_touch hold = {0, nx, ny};
-        dm_touch_set(&hold, 1);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.30 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            dm_touch_set(NULL, 0);
-        });
-    }
     // 先让鼠标点击把菜单选择挪到落点，再补 A/Enter/Space：VA-11 的主菜单在收到 A 的同一拍会确认
     // **手柄当前选择位**（默认「读取」），所以补键必须等点击生效（实测提前补键会直接进读档页）。
     // Let the mouse click move the menu selection to the hit point before pulsing A/Enter/Space: on the same tick as an A
@@ -376,10 +362,14 @@ static void tap_a_pulse_at(float nx, float ny) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         dm_kbd_press(0x28, 220);   // Enter（HID 0x28）：菜单/对话确认 | Enter (HID 0x28): menu/dialogue confirm
         dm_kbd_press(0x2C, 220);   // Space（HID 0x2C）：推进对白 | Space (HID 0x2C): advance dialogue
-        for (int k = 0; k < 6; k++) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.10 + 0.25 * k) * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // 2 拍 A、间隔 0.5 s：原 6 拍会把刚进入的场景/对白一次推进过多（实测连点会把读档页/对白跳过，
+        // 甚至在对白框创建前就把确认吃掉）。真实玩家一次点按也只期望一次确认。
+        // Two A pulses 0.5 s apart: the previous six-pulse burst over-advanced a freshly entered scene/dialogue (measured:
+        // rapid pulses skip the load page or get consumed before the textbox is created). A real tap only expects one confirm.
+        for (int k = 0; k < 2; k++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.20 + 0.50 * k) * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 pad_press(DM_BTN_A);
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                     pad_release(DM_BTN_A);
                 });
             });
