@@ -249,6 +249,29 @@ static void boot_env(void) {
 
 // 载荷自检：四个模块的内嵌段在不在（装载器会再核一遍；这里先给一行可读结论）。
 // Payload self-check: are the four modules' embedded sections present (the loader checks again; this gives one readable line first).
+// 首次启动把内置的台词文件（romfs/scripts/<lang>）复制到 Documents/save/<lang>：
+// 端口的 GameMaker 文件接口打不开 romfs 里的相对路径，补丁版从 host:/（= 存读档目录）读取，所以这里先把它们搬过来。
+// On first launch copy the bundled dialogue texts (romfs/scripts/<lang>) into Documents/save/<lang>: this port's
+// GameMaker file APIs cannot open romfs-relative paths, and the patched build reads them from host:/ (= the save
+// directory), so seed them beforehand.
+static void seed_dialog_texts(void) {
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *save = [docs.firstObject stringByAppendingPathComponent:@"save"];
+    NSString *bundle = [[NSBundle mainBundle] bundlePath];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *lang in @[@"eng", @"chn", @"jp"]) {
+        NSString *dst = [save stringByAppendingPathComponent:lang];
+        if ([fm fileExistsAtPath:dst]) continue;
+        NSString *src = [[bundle stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:lang];
+        if (![fm fileExistsAtPath:src]) continue;
+        NSError *err = nil;
+        if ([fm copyItemAtPath:src toPath:dst error:&err])
+            fprintf(stderr, "[boot] 解出内置台词：%s → %s\n", lang.UTF8String, dst.UTF8String);
+        else
+            fprintf(stderr, "[boot] 【红】复制内置台词 %s 失败：%s\n", lang.UTF8String, err.localizedDescription.UTF8String);
+    }
+}
+
 static void payload_check(void) {
     static const char *MODS[] = {"main", "sdk", "subsdk0", "subsdk1"};
     // 用与装载器一致的宿主映像解析：LiveContainer 等侧载器在宿主进程内加载时，
@@ -270,6 +293,7 @@ static void payload_check(void) {
         if (!ok) bad = 1;
         fprintf(stderr, "[boot] 内嵌段 %s: x0=%lu W=%lu x1=%lu %s\n", m, z0, zw, z1, ok ? "OK" : "X 缺");
     }
+    seed_dialog_texts();
     NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString *save = [docs.firstObject stringByAppendingPathComponent:@"save"];
     NSString *gw = [save stringByAppendingPathComponent:@"game.win"];

@@ -39,6 +39,18 @@ python3 gen_build_ios.py ../dm/host Gen > Gen/ios_build.xcconfig || { t "🔴 ge
 { echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $(cat Gen/segprot_flags.txt)"; cat Gen/ios_build.xcconfig; } > Gen/dm.xcconfig
 for m in $MODS; do cp "$PATCHED/$m.fixups.tsv" "$PATCHED/$m.gates.tsv" Resources/dm/; done
 [ -f "$PATCHED/main.cuts.tsv" ] && cp "$PATCHED/main.cuts.tsv" Resources/dm/ || true
+# 台词文本（romfs/scripts/<lang>）：放进产物 dm/ 下，App 首次启动会解到 Documents/save/<lang>
+# Dialogue texts (romfs/scripts/<lang>): bundled under the product's dm/ folder; the app extracts them into
+# Documents/save/<lang> on first launch. Source: $DM_TEXTS_ROMFS (defaults to the repo's extracted romfs).
+TEXTS=${DM_TEXTS_ROMFS:-"$HERE/../../赛博朋克酒保行动 Cyberpunk Bartender Action/romfs/scripts"}
+if [ -d "$TEXTS" ]; then
+  for L in eng chn jp; do
+    [ -d "$TEXTS/$L" ] && { rm -rf "Resources/dm/$L"; cp -R "$TEXTS/$L" "Resources/dm/$L"; }
+  done
+  echo "台词文本已内置：$(ls Resources/dm | tr '\n' ' ')"
+else
+  echo "（没有找到 romfs 台词目录，跳过内置：$TEXTS）"
+fi
 [ "${1:-}" = "--gen-only" ] && { t "生成完成（--gen-only）"; exit 0; }
 
 # 2) 生成工程并构建（无签名，真机 arm64）

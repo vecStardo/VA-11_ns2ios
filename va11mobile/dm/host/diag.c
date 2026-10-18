@@ -569,7 +569,6 @@ void dm_scan_value(uint64_t needle, uint64_t lo, uint64_t hi) {
 // 在「首次数组取值」和「失败点」各取一次，diff 出随调用变化的那几格 —— 目标是识别「值栈栈顶」指针。
 // Sample the two runtime global-state blocks in main (+0xafbf00, +0xb19600) once at the first indexed read and once at the
 // failure, then diff them to pick out the cells that move per call -- the goal is to identify the value-stack top pointer.
-static uint64_t g_blk_first[2][32]; static int g_blk_have;
 void dm_sample_block(int which, int store) {
     module_t *m = module_of((const void *)g_mod[0].base);
     (void)m;
@@ -738,6 +737,7 @@ static void dm_log_tlr(const char *tag) {
 // x2 = 变量名字符串、x3 = 对象名、w4/w5 = 两个索引。命中说明某实例变量从未被赋值。
 // Observation at the "variable not set before reading" raise site (OBS_VARREAD at main+0x23000):
 // x2 = variable name string, x3 = object name, w4/w5 = indices. A hit means an instance variable was never assigned.
+static uint64_t g_blk_first[2][32]; static int g_blk_have;   // 运行时全局块采样缓存（跨平台声明）
 int dm_host_readable(const void *addr, size_t len);
 static void va11_varread_obs(const uint64_t *regs) {
     const char *vname = (const char *)(uintptr_t)regs[2];
@@ -807,7 +807,11 @@ static void va11_array_obs(const uint64_t *regs) {
     }
     { static struct { uint64_t src; int64_t idx; uint32_t tag; } ring[16]; static int rn, rpos;
       if (tag == 2) {
-          { static int first; if (!first++) { void dm_sample_block(int,int); dm_sample_block(0,1); dm_sample_block(1,1); dm_log_tlr("首次取值");
+          { static int first; if (!first++) {
+#if !TARGET_OS_IPHONE
+              void dm_sample_block(int,int); dm_sample_block(0,1); dm_sample_block(1,1);
+#endif
+              dm_log_tlr("首次取值");
 #if !TARGET_OS_IPHONE
               { extern uint64_t g_va11_tlr_current; void *tlr = pthread_getspecific(g_keytlr); int dm_tls_redirect_all(uint64_t);
                 if (tlr) dm_tls_redirect_all((uint64_t)(uintptr_t)tlr); }
@@ -831,7 +835,11 @@ static void va11_array_obs(const uint64_t *regs) {
       rn = 0; rpos = 0;
     }
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
+#if !TARGET_OS_IPHONE
+#if !TARGET_OS_IPHONE
     { void dm_sample_block(int,int); g_blk_have = 1; dm_sample_block(0,0); dm_sample_block(1,0); }
+#endif
+#endif
     dm_log_tlr("失败时");
     { extern pthread_key_t g_keytlr; uint64_t tp = 0; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
       void *our = pthread_getspecific(g_keytlr);
