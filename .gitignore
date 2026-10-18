@@ -15,3 +15,12 @@ dm/host/dmhost_m3
 prod.keys
 title.keys
 *.keys
+
+# 出包/运行产物与本地杂项（补充）
+**/Resources/dm/
+**/.DS_Store
+.DS_Store
+**/__pycache__/
+*.pyc
+*.pcm
+boot*.txt

@@ -25,6 +25,39 @@ va11mobile/
 ```
 
 
+
+## 项目状态（初步完成移植）
+
+**这是一个「初步完成」的移植，不是完整可通关的成品。**
+
+已验证（模拟器 + 真机 LiveContainer，2026-10-19/20）：
+
+| 能力 | 状态 |
+|---|---|
+| 无签名 IPA 安装启动（iOS 16+，bundle `local.va11.mobile`） | ✅ |
+| 标题 → 语言选择 → 新游戏 → 酒吧场景 | ✅ |
+| 多段对话推进（英/中） | ✅ |
+| 存 / 读档 | ✅ 简单读写验证 |
+| 音频（音乐/音效） | ✅ 已修好（见「经验与教训」音频一节） |
+| 完整游玩（调酒流程、多章节、结局、设置项全量） | ❌ **未验证** |
+
+请把本仓库当作「能跑起来、能进游戏、能存读档」的移植基线，而不是已验收的成品；
+后续需要按 `verify/INPUT-DIAG.zh-CN.md` 里的方法继续做完整游玩验证。
+
+## 语言版本说明（重要）
+
+本移植基于 **Switch 版英文本体（v1.0.0）** 制作，中文没有使用外部汉化补丁，而是直接用**本体 romfs 自带的 `chn` 台词**：
+
+1. 台词不在 `game.win` 里，而在 romfs 的 `scripts/<lang>/*.ini`（`eng` / `chn` / `jp` / …）。
+   App 已内置 `eng/chn/jp` 三套台词，首次启动自动解到 `Documents/save/<lang>/`；
+2. Switch 版启动时有一个 `LANGUAGE SELECT` 画面，但默认会按系统语言**自动决定并跳过**，
+   所以「在设置里找不到语言选项」是正常的。为此我们提供两个**默认语言不同**的数据文件：
+   - `game_patched_EN.win`：默认英文；
+   - `game_patched_CN.win`：默认简体中文；
+3. 网上流传的「1.0.1 汉化补丁」与本移植使用的 **1.0.0 本体版本不匹配**（其 `game.win` 与本体不是同一构建），
+   因此**没有采用**；想要中文请用上面的 CN 数据变体；
+4. 数据文件必须使用我们打过「台词加载补丁」的版本（见下），原版 `game.win` 会卡在 day0 黑屏。
+
 ## 安装（day0 已可正常游玩）
 
 1. 把 **打过台词补丁的 `game.win`** 放进 App 数据目录的 `Documents/save/game.win`
@@ -118,6 +151,14 @@ DM_PATCHED=~/va11-work/patched ./build.sh      # → out/Va11IOS-unsigned.ipa + 
 - `va11mobile/iosapp/out/Va11IOS-unsigned.ipa`（2026-10-18 11:1x 重新打包，17,019,361 B，sha256 前 24 位 `f3f19b2c192b6c8f66748e67`）：含「默认中文（DM_LANG=en-US）」「点按补 A」「切后台不崩」「帧同步点击队列 + 单步注入钩子」「KeyboardState 0x30 / MouseState 结构修正」「**按真机语义不再伪造鼠标（输入修复）**」；结构校验 0 项红。
 - `va11mobile/iosapp/out/verify.txt`：无签名 ipa 结构校验（0 项红）。
 
+## 经验与教训 / 给后续 Agent 的操作手册
+
+- 操作手册（Skill）：[`skills/va11mobile/SKILL.md`](skills/va11mobile/SKILL.md) —— 从用户自备游戏文件到
+  出包、安装、验证的完整步骤，以及已知坑（day0 黑屏 / 音频缓冲只填一半 / 语言选项 / 汉化补丁版本 / 帧率）；
+- 经验总结：[`docs/LESSONS.zh-CN.md`](docs/LESSONS.zh-CN.md) —— 方法论（可观测优先、A/B 隔离、把主观描述
+  转成指标）与踩坑排序；
+- 完整调查流水：[`verify/INPUT-DIAG.zh-CN.md`](verify/INPUT-DIAG.zh-CN.md)。
+
 ## 合法使用声明
 
 - **必须拥有正版游戏**。本仓库不含任何游戏程序、数据或美术资源，也不提供下载地址。
@@ -151,9 +192,11 @@ copy of the game; nothing derived from game files may be redistributed.
 - **原版英文数据**可完整走：标题 → 开场旁白 → 酒吧内景旁白，0 条 GameMaker 报错。
 
 ### 已知问题
-- **汉化补丁（标称支持 1.0.1）跑在本体 1.2.3.0 上会在 `obj_textbox` / `gml_Script_textbox_loadbox` 报
-  「trying to index a variable which is not an array」→ 黑屏**。这不是移植问题（原版数据同环境 0 报错）。
-  想要中文：需要匹配 1.2.3.0 的补丁，或改用 1.0.1/1.0.0 的本体。
+- **必须使用打过补丁的 `game.win`**：Switch 版台词在 romfs 的 `.ini` 里，而移植的 GameMaker 文件接口
+  读不到 romfs 相对路径；补丁把 `async_init` 的加载改成同步读 `host:/<lang>/*.ini`（见 `tools/romfs_patch/`）。
+  未打补丁的原版数据会卡在 day0 黑屏；
+- **完整游玩未验证**：调酒小游戏、多章节流程、结局、设置项全量都还没系统测试；
+- 音频曾有「爆音」缺陷（块只填一半仍按全块播放），已修复，详见 `verify/INPUT-DIAG.zh-CN.md`。
 
 ### 安装步骤（自签 / LiveContainer 均可）
 1. 用自签工具安装 `Va11IOS-unsigned-*.ipa`（bundle id `local.va11.mobile`，最低 iOS 16.0）；
