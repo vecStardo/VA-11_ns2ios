@@ -445,6 +445,26 @@ static void setlang_obs(const uint64_t *regs) {
 // 给调试器用的失败钩子：非数组索引发生时调用（空实现，lldb 在这里下断点即可抓到现场）。
 // Debugger hook: called when a non-array index happens (empty; set an lldb breakpoint here to catch the site).
 __attribute__((noinline)) void dm_array_fail_hook(void) { __asm__ volatile(""); }
+
+// 失败时把客体代码区 dump 到文件（DM_DUMPCODE=路径）：用来离线反汇编游戏自己那份 GML 编译代码，
+// 查它里面有没有 svc / x18 / tpidr 这类「在苹果内核上不可原生执行、而我们的改写器没能改到」的指令。
+// On failure dump the guest code region to a file (DM_DUMPCODE=path) so the game's own compiled GML code can be
+// disassembled offline and checked for svc / x18 / tpidr instructions that Apple's kernel cannot run natively and that
+// our rewriter never touched (it only rewrites main/sdk/subsdk*).
+void dm_dump_code_at(uint64_t addr, size_t len) {
+    const char *path = getenv("DM_DUMPCODE");
+    if (!path || !*path || !addr) return;
+    static int done; if (done++) return;
+    uint64_t base = addr & ~(uint64_t)0xFFFFF;   // 1 MB 对齐（代码区一般按大页映射）
+    uint8_t *buf = malloc(len);
+    vm_size_t got = 0;
+    if (!buf) return;
+    if (vm_read_overwrite(mach_task_self(), (vm_address_t)base, len, (vm_address_t)buf, &got) == KERN_SUCCESS) {
+        FILE *f = fopen(path, "wb");
+        if (f) { fwrite(buf, 1, got, f); fclose(f); LOG("[va11] 代码区已 dump：%s（基址 %p，%lu 字节）", path, (void *)base, (unsigned long)got); }
+    } else LOG("[va11] 代码区 dump 失败（基址 %p）", (void *)base);
+    free(buf);
+}
 int dm_host_readable(const void *addr, size_t len);
 static void va11_array_obs(const uint64_t *regs) {
     uint64_t src = regs[1], idx = regs[2];
@@ -478,6 +498,7 @@ static void va11_array_obs(const uint64_t *regs) {
     }
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
     dm_array_fail_hook();                       // 调试器断点处（lldb: breakpoint set -n dm_array_fail_hook）
+    { void dm_dump_code_at(uint64_t, size_t); dm_dump_code_at(regs[30], 4u << 20); }   // DM_DUMPCODE：导出代码区 | dump the code region for offline analysis
 
     static int n; if (n++ > 40) return;
     uint64_t w0 = 0, w1 = 0, w2 = 0;
