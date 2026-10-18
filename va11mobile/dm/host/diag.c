@@ -462,7 +462,14 @@ static void va11_array_obs(const uint64_t *regs) {
       }
       for (int i = 0; i < rn; i++) {
           int k = (rpos - rn + i + 16) & 15;
-          LOG("[va11] 取值历史[%d] 源=%p 标签=%u 下标=%lld", i, (void *)(uintptr_t)ring[k].src, ring[k].tag, (long long)ring[k].idx);
+          uint64_t sr = ring[k].src, obj = 0, dat = 0; int32_t cnt = -1; uint32_t etag = 0xdeadbeef;
+          if (dm_host_readable((const void *)(uintptr_t)sr, 8)) memcpy(&obj, (const void *)(uintptr_t)sr, 8);
+          if (obj && dm_host_readable((const void *)(uintptr_t)(obj + 0x1c), 4)) memcpy(&cnt, (const void *)(uintptr_t)(obj + 0x1c), 4);
+          if (obj && dm_host_readable((const void *)(uintptr_t)(obj + 8), 8)) memcpy(&dat, (const void *)(uintptr_t)(obj + 8), 8);
+          if (dat && dm_host_readable((const void *)(uintptr_t)dat, 4)) memcpy(&etag, (const void *)(uintptr_t)dat, 4);
+          LOG("[va11] 取值历史[%d] 源=%p 标签=%u 下标=%lld | 数组对象=%p 元素数=%d 数据=%p 首元素标签=%u",
+              i, (void *)(uintptr_t)sr, ring[k].tag, (long long)ring[k].idx,
+              (void *)(uintptr_t)obj, (int)cnt, (void *)(uintptr_t)dat, etag);
       }
       rn = 0; rpos = 0;
     }
