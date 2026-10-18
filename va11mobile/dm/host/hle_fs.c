@@ -726,6 +726,10 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
 }
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) {
+    // 诊断：目录枚举也算「读数据」——游戏可能先列目录再决定读哪个文件（之前只记 OpenFile，会漏掉这条路）。
+    // Diagnostic: enumerating a directory also counts as a read; the game may list a directory before picking a file
+    // (only OpenFile used to be logged, so this path was invisible).
+    { static _Atomic int ndir; if (atomic_fetch_add(&ndir, 1) < 200) LOG("fs opendir %s mode=%d", path ? path : "(null)", mode); }
     HP(path); DIR *d = opendir(hp);
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h); h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
@@ -786,6 +790,31 @@ HLE_FORCE("_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm", "VA-11：不带出参的 R
 // VA-11 port: at startup the GM runner resolves nn::fs::MountHost via nn::ro and mounts host:/ (a dev-machine mechanism),
 // then switches its config-read prefix to host:/. The host mounts host: to the save directory too, so boot files
 // such as preselected_user are equally visible under save: and host:.
+// 挂载状态查询：游戏（和它的 SDK 封装）在读取某个挂载点之前会先问「挂了吗」。
+// 之前宿主从不回答这两条，SDK 自己的默认实现读的是宿主从未填过的挂载表 → 一律「没挂」，
+// 游戏于是跳过读取（实测 VA-11 第一天对话框 textbox_loadbox 就是因为读不到台词数据而索引非数组）。
+// nxnative 的故障目录里同一类问题（IL2CPP IsMounted("rom") 未答 → 跳过 global-metadata.dat）也是这个修法。
+// Mount-state queries: before reading, the game (and its SDK wrappers) ask whether a mount is mounted. The host never
+// answered these, and the SDK's own default reads a mount table the host never fills, so the answer was always "no" and
+// the game skipped the read. (nxnative's failure catalogue has the same class: an unanswered IsMounted("rom") made
+// IL2CPP skip global-metadata.dat.)
+static int va11_mounted_name(const char *name) {
+    if (!name || !*name) return 0;
+    size_t ln = strlen(name); while (ln && name[ln - 1] == ':') ln--;
+    for (int i = 0; i < g_nmnt; i++) if (strlen(g_mnt[i].name) == ln && !strncmp(g_mnt[i].name, name, ln)) return 1;
+    return 0;
+}
+// bool nn::fs::IsMounted(const char*)：8 字节返回在 w0
+HLE_FORCE("_ZN2nn2fs9IsMountedEPKc", "VA-11：挂载查询 ← 宿主挂载表（读台词文件前的门槛）", unsigned, h_fs_IsMounted, const char *name) {
+    int m = va11_mounted_name(name);
+    { static int n; if (n++ < 40) LOG("fs IsMounted(%s) → %d", name ? name : "(null)", m); }
+    return (unsigned)m;
+}
+// Result nn::fs::detail::GetMountName(const char*)：把 "save:/x" 这类路径拆出挂载名；宿主按表回答
+HLE_FORCE("_ZN2nn2fs6detail12GetMountNameEPKc", "VA-11：路径 → 挂载名（宿主挂载表）", Result, h_fs_GetMountNameLog, const char *path) {
+    static int n; if (n++ < 40) LOG("fs detail::GetMountName(%s)", path ? path : "(null)");
+    return RES_OK;
+}
 HLE_FORCE("_ZN2nn2fs9MountHostEPKcS2_", "VA-11：host:/ 挂到 DM_SAVE（与 save: 同目录）", Result, h_fs_MountHostVa11, const char *name, const char *path) {
     (void)path;
     LOG("fs 挂载 %s: → $DM_SAVE（VA-11 host 机制）", name);
