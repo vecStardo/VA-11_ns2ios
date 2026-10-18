@@ -38,6 +38,15 @@ void dm_host_preload_start(int argc, char **argv);
 typedef struct { uint32_t id; float x, y; } dm_touch;
 void dm_touch_set(const dm_touch *t, int n);
 
+// HD 震动（宿主 hle_hid.c 的 nn::hid 震动面调）：每次「一次震动」调一次，强度 0–1。
+// 游戏（GM runner）在一次震动期间会按帧重复发同一强度、停止时发 0；「同一脉冲每帧重复」的去重已在宿主做掉
+// （距上一次非零值 120 ms 以上才算新脉冲），所以前端只需在每次调用时震一下，不用自己跟踪开关。
+// HD rumble (called by the host's nn::hid vibration surface in hle_hid.c): once per "one vibration", intensity 0–1.
+// During one vibration the game (the GM runner) repeats the same intensity every frame and sends 0 to stop; the
+// "same pulse repeated every frame" de-duplication is already done in the host (a new pulse needs a gap of 120 ms
+// since the last non-zero value), so the front end only needs to give one tap per call and does not track on/off.
+void front_haptic(float intensity);
+
 // 存档未保存（宿主 hle_fs.c 调；iOS 前端写同名强实现弹原生提示「存储空间不足，进度未保存」，缺省弱实现只记日志）。
 // 时机：游戏一次存档事务（两次 Commit 之间）里有存档写失败（盘满等），这次 Commit 被拒、已提交的旧档不变时，每个被拒的事务调一次；
 // 下一个事务成功就照常提交，前端不必做恢复动作。err = 首个失败的 errno（ENOSPC = 28 即空间不足）。在游戏线程调，前端自己切主线程、不要阻塞

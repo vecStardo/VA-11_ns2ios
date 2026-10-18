@@ -9,8 +9,8 @@ description: Build, patch, install and verify the VA-11 HALL-A (Cyberpunk Barten
 iPhone / iPad 上：无签名 IPA，自签 / LiveContainer 安装。宿主代码来自 d2r-mobile 的血统，
 在 `va11mobile/dm/host/`，Graphcis 走 EGL→EAGL，HLE 接管文件/输入/音频/时间/账号等服务。
 
-**本移植目前是「初步完成」**：已验证安装启动、进新游戏、酒吧场景、多段对话、存读档、中英双语、音频；
-**完整游玩（调酒流程、多章节到结局、设置项全量）尚未验证**。不要把「能进游戏」当成「已验证通关」。
+**本移植目前是「初步完成」**：已验证安装启动、进新游戏、酒吧场景、多段对话、存读档、中英双语、音频、
+HD 震动（设置页触发链路）；**完整游玩（调酒流程、多章节到结局、其余设置项）尚未验证**。不要把「能进游戏」当成「已验证通关」。
 
 ## 铁律（先读）
 
@@ -78,7 +78,10 @@ App 首次启动复制到 `Documents/save/<lang>/`（`seed_dialog_texts()`）。
 5. `ERROR in` 计数 = 0；
 6. `audio 统计`：追加 ≈57 次/秒、无数字静音、欠载 0；
 7. `渲染统计`：swap 次数 ≈ FPS（模拟器 ~27、真机 ~30，游戏本身锁 30）；
-8. 手动：语言选择 → 新游戏 → 酒吧场景 → 点击推进多段对话 → 存/读档。
+8. 手动：语言选择 → 新游戏 → 酒吧场景 → 点击推进多段对话 → 存/读档；
+9. 震动：标题或暂停菜单 → 设置 → 点「HD 振动 / HD Rumble」，`boot.txt` 应出现
+   `[hid-vib] 首次震动：句柄=… 振幅=…` 与 `[haptic] 前端震动：振幅 … → 重/中/轻 档`。
+   注意原版语义：OFF → 软（0.5）→ 硬（1.0）→ OFF 循环，切到 OFF 那一次振幅是 0，**不会震**。
 
 ## 坑与经验（按踩坑顺序）
 
@@ -124,10 +127,26 @@ UTMT 反编译（`out/utmt/gml_all/`）是定位这类 GML 行为的最快途径
 `build.sh` 会做 `__DM*W` 段校验 + ad-hoc 自签演练，要求「0 项红」；LiveContainer 下宿主映像
 按内嵌节定位（`dm_host_image()`），不要用 `_NSGetMachExecuteHeader` 判断段是否存在。
 
+### 坑 7 · 震动不是「一次调用一次震」：GM runner 每帧重复发值
+
+`gamepad_set_vibration(id, l, r)` 在 Switch runner 里只是把左右强度记进 GM 手柄对象；随后 runner 的
+**每帧手柄更新**按当前手柄变体调 `nn::hid::SendVibrationValue`（左/右各一次，停止时发 0）。
+如果 HLE 每收到一次非零值就震一下，就会变成每帧都在震。
+
+修法（`hle_hid.c`）：`IsVibrationPermitted` 返回 1；`GetVibrationDeviceHandles` 按手柄变体给
+左/右非零句柄（全键/掌机/双手柄 2 个，单 Joy-Con 1 个），否则 runner 根本不会初始化震动设备；
+`SendVibrationValue` 取 `VibrationValue{amp_low, freq_low, amp_high, freq_high}` 的振幅，
+**距上一次非零值 > 120 ms 才算新脉冲**，只在脉冲开始时调 `front_haptic`（iOS：UIImpactFeedbackGenerator
+轻/中/重 + 强度 0.30–1.00）。验证时看 `[hid-vib]` / `[haptic]` 日志：一次点击应只有一条 `[haptic]`。
+调试期还确认了：设置页对应 GML 是 `vibration_config`（鼠标释放 → user0 → 改强度 → user1 →
+`local_vibranium` → `gamepad_set_vibration`），UTMT 反编译可快速核对这类行为。
+
 ## 排障入口
 
 - 日志：App `Documents/boot.txt`（把整个文件发回来即可）；
 - 音频：`DM_AUDIO_OUT_DUMP`（交给声卡前）、`DM_AUDIO_DUMP`（游戏追加时）、`DM_AUDIO_TESTTONE=1`（440 Hz 自检音）；
 - 渲染：`渲染统计`（FPS/present 耗时）；
 - 台词：`fs open OK host:/<lang>/…` 次数；
-- 详细调查记录：`va11mobile/verify/INPUT-DIAG.zh-CN.md`（几十轮踩坑的原始证据与结论）。
+- 震动：`[hid-vib] GetVibrationDeviceHandles` / `[hid-vib] 首次震动` / `[haptic] 前端震动`（见坑 7）；
+- 详细调查记录：`va11mobile/verify/INPUT-DIAG.zh-CN.md`（几十轮踩坑的原始证据与结论）、
+  `va11mobile/verify/VIBRATION.zh-CN.md`（HD 震动实现与模拟器证据）。

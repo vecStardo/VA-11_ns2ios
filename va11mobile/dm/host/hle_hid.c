@@ -522,13 +522,73 @@ HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "手柄样式查询；跟 DM_OPMODE
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", "全键手柄状态；取 dm_input", void, h_hid_GetFullKey, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_FULLKEY); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", "掌机手柄状态；取 dm_input", void, h_hid_GetHandheld, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_HANDHELD); }
 
-// 震动：设备数 0，游戏不会再初始化 / 发送
-// Vibration: device count 0, the game will not initialize / send any further
-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可；宿主不支持（返回 bool）", unsigned, h_hid_VibPermit, void) { return 0; }
+// ---- 震动：nn::hid 震动面 → 前端触感（front_haptic，见 front.h）
+// GM runner 的 gamepad_set_vibration 把左右马达强度写进 GM 手柄对象，之后每帧由它的手柄更新函数按当前手柄变体
+// 调 SendVibrationValue（左/右各一次，VibrationValue = {amp_low, freq_low, amp_high, freq_high}）；游戏停止震动时发 0。
+// 所以这里不是「一次调用 = 一次震动」：一次震动期间每帧都有非零值。宿主按 120 ms 间隔做脉冲判定，
+// 只在一次新脉冲开始时调 front_haptic；这样设置页点一次 HD 震动 = 一次触感，调酒时的高频短脉冲也不会被合并成一团。
+// ---- Vibration: nn::hid vibration surface → the front end's haptics (front_haptic, see front.h)
+// gamepad_set_vibration in the GM runner stores the left/right motor strengths in the GM gamepad object, and from then
+// on its per-frame gamepad update calls SendVibrationValue with the current value for the active controller variant
+// (once for left, once for right; VibrationValue = {amp_low, freq_low, amp_high, freq_high}); sending 0 stops it.
+// So one call is not one vibration: while vibrating there is a non-zero value every frame. The host uses a 120 ms gap
+// to detect pulses and only calls front_haptic when a new pulse starts; one HD Rumble click in Settings then gives one
+// haptic tap, and the rapid short pulses while mixing do not merge into one long buzz.
+typedef struct { float amp_low, freq_low, amp_high, freq_high; } VibValue;   // nn::hid::VibrationValue（16 字节） | nn::hid::VibrationValue (16 bytes)
+_Static_assert(sizeof(VibValue) == 16, "VibrationValue");
+typedef struct { uint32_t type, position; } VibDeviceInfo;                  // nn::hid::VibrationDeviceInfo（8 字节） | nn::hid::VibrationDeviceInfo (8 bytes)
+_Static_assert(sizeof(VibDeviceInfo) == 8, "VibrationDeviceInfo");
+// 手柄变体 → 振动设备数：全键 / 掌机 / 双手柄各左右 2 个，单 Joy-Con 1 个（NpadStyleTag 位序：FullKey/Handheld/JoyDual/JoyLeft/JoyRight）
+// Controller variant → vibration device count: FullKey / Handheld / JoyDual have a left and a right device (2), a single Joy-Con has 1
+// (NpadStyleTag bit order: FullKey/Handheld/JoyDual/JoyLeft/JoyRight)
+static int vib_dev_count(uint32_t style) {
+    if (style & (1u << 0)) return 2;   // NpadStyleFullKey
+    if (style & (1u << 1)) return 2;   // NpadStyleHandheld
+    if (style & (1u << 2)) return 2;   // NpadStyleJoyDual
+    if (style & (1u << 3)) return 1;   // NpadStyleJoyLeft
+    if (style & (1u << 4)) return 1;   // NpadStyleJoyRight
+    return 0;
+}
+// 句柄对宿主外的调用方（这里只有 GM runner）是不透明的 32 位：它只会原样传回 InitializeVibrationDevice /
+// GetVibrationDeviceInfo / SendVibrationValue，所以编码只需非零且能区分左右。低 8 位 = 设备序号（0 左 / 1 右）。
+// The handle is opaque 32 bits to everyone outside the host (only the GM runner here): it is passed back unchanged to
+// InitializeVibrationDevice / GetVibrationDeviceInfo / SendVibrationValue, so the encoding only needs to be non-zero and
+// distinguish left/right. Low 8 bits = device index (0 left / 1 right).
+static _Atomic uint64_t g_vib_last_nz_ns;   // 上一次非零振幅的时刻（脉冲判定） | time of the last non-zero amplitude (pulse detection)
+static _Atomic int g_vib_logged;            // 首条震动日志（诊断用） | first vibration log line (diagnostics)
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可：宿主接前端触感，返回 true", unsigned, h_hid_VibPermit, void) { return 1; }
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
-          "震动设备；宿主 0 个", int, h_hid_GetVibHandles, void *out, int max, const uint32_t *id, uint32_t style) { (void)out; (void)max; (void)id; (void)style; return 0; }
-HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "震动；宿主不支持", void, h_hid_InitVib, const void *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动；宿主不支持", void, h_hid_SendVib, const void *h, const void *v) { (void)h; (void)v; }
+          "震动设备：按手柄变体给左/右句柄（非零，GM runner 原样传回）", int, h_hid_GetVibHandles, void *out, int max, const uint32_t *id, uint32_t style) {
+    int n = vib_dev_count(style);
+    if (!out || max <= 0) n = 0;
+    if (n > max) n = max;
+    uint32_t *handles = out;
+    for (int i = 0; i < n; i++) handles[i] = 0x01000000u | ((id ? *id : 0u) << 8) | (uint32_t)i;
+    { static int logged; if (!logged++ && n) LOG("[hid-vib] GetVibrationDeviceHandles id=%u style=%#x → %d 个（左/右）", id ? *id : 0u, style, n); }
+    return n;
+}
+HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "震动设备初始化：宿主无设备可初始化，直接成功", void, h_hid_InitVib, const void *h) {
+    { static int logged; if (!logged++ && h) LOG("[hid-vib] InitializeVibrationDevice 句柄=%#x", *(const uint32_t *)h); }
+}
+HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "震动设备信息：线性马达 + 左/右位置", int32_t, h_hid_VibInfo, void *i, const void *h) {
+    VibDeviceInfo *info = i;
+    if (info) { info->type = 1; info->position = h ? (*(const uint32_t *)h & 0xffu) : 0u; }   // type 1 = 线性马达 | type 1 = linear actuator
+    return 0;
+}
+HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动：按振幅脉冲调前端触感", void, h_hid_SendVib, const void *h, const void *v) {
+    const VibValue *vv = v;
+    if (!vv) return;
+    float amp = fmaxf(vv->amp_low, vv->amp_high);
+    if (!(amp > 0.0f)) amp = 0.0f;            // 顺带把 NaN 归一成 0 | also normalise NaN to 0
+    if (amp > 1.0f) amp = 1.0f;
+    if (amp < 0.02f) return;                   // 0 / 抖动噪声：停止，不算脉冲 | zero / noise: stop, not a pulse
+    uint64_t now = now_ns(), last = atomic_load_explicit(&g_vib_last_nz_ns, memory_order_relaxed);
+    if (!last || now - last > 120000000ull) {  // 新脉冲：上一次非零值已过去 > 120 ms | new pulse: more than 120 ms since the last non-zero value
+        if (!atomic_exchange(&g_vib_logged, 1)) LOG("[hid-vib] 首次震动：句柄=%#x 振幅=%.2f 低频=%.0f Hz 高频=%.0f Hz", h ? *(const uint32_t *)h : 0u, amp, vv->freq_low, vv->freq_high);
+        front_haptic(amp);
+    }
+    atomic_store_explicit(&g_vib_last_nz_ns, now, memory_order_relaxed);
+}
 
 // 触屏：nn::hid::TouchScreenState<16> = { int64 sampling; int32 count; int32 _r; TouchState touches[16]（各 0x28） }
 // 内容由 hle_touch.c 按前端推来的触点填（布局与短按锁存见该文件）；游戏只看第 0 份，返回写入的状态份数 1
@@ -719,7 +779,9 @@ HLE_FORCE("_ZN2nn3hid32SetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHan
 HLE_FORCE("_ZN2nn3hid34ResetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleE", "VA-11：融合参数不接", void, h_hid_SixResetP, const void *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid25GetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleE", "VA-11：漂移模式默认", int32_t, h_hid_GyroMode, const void *h) { (void)h; return 0; }
 HLE_FORCE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE", "VA-11：漂移模式不接", void, h_hid_GyroSet, const void *h, const int32_t *m) { (void)h; (void)m; }
-HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "VA-11：震动设备信息零", int32_t, h_hid_VibInfo, void *i, const void *h) { (void)i; (void)h; return 0; }
+// GetVibrationDeviceInfo 已在上面的震动段实现（同一符号不能登记两次，装载期会报「强制接管清单重复」）
+// GetVibrationDeviceInfo is implemented in the vibration block above (the same symbol must not be registered twice;
+// the loader reports "duplicate forced-takeover list" at load time)
 HLE_FORCE("_ZN2nn3hid18ParseVibrationFileEPNS0_17VibrationFileInfoEPNS0_26VibrationFileParserContextEPKvm", "VA-11：震动文件不解析", int32_t, h_hid_VibParse, void *fi, void *ctx, const char *p, unsigned long n) { (void)fi; (void)ctx; (void)p; (void)n; return 0; }
 HLE_FORCE("_ZN2nn3hid22RetrieveVibrationValueEPNS0_14VibrationValueEiPNS0_26VibrationFileParserContextE", "VA-11：震动值零", int32_t, h_hid_VibGet, void *v, int32_t i, void *ctx) { (void)v; (void)i; (void)ctx; return 0; }
 HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", "VA-11：手柄对话框按确认处理", int32_t, h_hid_ShowCtl, void *res, const void *arg) {

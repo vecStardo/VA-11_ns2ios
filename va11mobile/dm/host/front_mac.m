@@ -427,3 +427,8 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     snprintf(out, out_cap, "%s", text.UTF8String);
     return 1;
 }
+
+// HD 震动（front.h）：Mac 命令行宿主没有触感硬件，空实现（真机 iOS 前端在 iosapp/Sources/main.m）。
+// HD rumble (front.h): the Mac command-line host has no haptics hardware; empty implementation (the iOS front end
+// is iosapp/Sources/main.m).
+void front_haptic(float intensity) { (void)intensity; }

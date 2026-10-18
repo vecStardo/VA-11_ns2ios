@@ -3,6 +3,30 @@
 版本号规则：`MAJOR.MINOR.PATCH`（语义化）。构建号 `CFBundleVersion` = 当前 git 提交数（单调递增）。
 版本源头：`va11mobile/VERSION`（出包时 `build.sh` 读取，可用 `DM_VERSION=` 覆盖）。
 
+## 未发布 — 2026-10-19 · HD 震动
+
+### 已实现
+
+- **HD 震动**（标题 / 暂停菜单 → 设置 → HD 振动 / HD Rumble）：接通 `nn::hid` 的震动面
+  （`IsVibrationPermitted` / `GetVibrationDeviceHandles` / `InitializeVibrationDevice` /
+  `GetVibrationDeviceInfo` / `SendVibrationValue`）到 iOS 触感（`front_haptic`，
+  UIImpactFeedbackGenerator 轻/中/重 + 强度 0.30–1.00，Mac 宿主为空实现）；
+- 按游戏语义做脉冲去重：GM runner 在一次震动期间每帧重复发同一振幅、停止时发 0，
+  宿主只在「距上一次非零值 > 120 ms」时触发一次触感，避免每帧连震；
+- 手柄变体覆盖：全键 / 掌机 / 双手柄给左、右 2 个非零句柄，单 Joy-Con 给 1 个。
+
+### 验证
+
+- iOS 模拟器（VA11-User，`DM_OPMODE=0` 掌机）：标题 → 设置 → HD 振动（软 → 硬），
+  `Documents/boot.txt` 出现 `[hid-vib] 首次震动：句柄=0x1002000 振幅=1.00` 与
+  `[haptic] 前端震动：振幅 1.00 → 重 档，强度 1.00`，且一次点击只出现一条 `[haptic]`（去重生效）；
+- arm64 无签名出包 `Va11IOS-1.0.0-unsigned.ipa`（build 130）结构校验 0 项红，ad-hoc 自签演练通过。
+
+### 待办
+
+- 真机（Taptic Engine）手感待用户实机确认；模拟器无触感马达，只能验证调用链与日志；
+- 原版语义下「硬 → OFF」那一次振幅为 0、不会震，属预期行为。
+
 ## v1.0.0 — 2026-10-20 · 首个正式版本（初版移植）
 
 第一个可对外发布的版本：VA-11 HALL-A（Nintendo Switch 版）在 iPhone / iPad 上原生运行，

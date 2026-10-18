@@ -120,6 +120,29 @@ void front_save_failed(int err) {
     });
 }
 
+// HD 震动（front.h）：宿主 hle_hid.c 的 nn::hid 震动面已经把「一次震动」去重好，这里每次调用给一次触感。
+// 用 UIImpactFeedbackGenerator（Taptic Engine）：档位跟振幅走（轻 / 中 / 重），强度映射到 0.30–1.00；
+// iPad / 模拟器没有触感马达时系统自己忽略，不影响游戏。空振幅（0）不该走到这里（宿主已过滤）。
+// HD rumble (front.h): the host's nn::hid vibration surface in hle_hid.c has already de-duplicated one vibration,
+// so each call gives one haptic tap. Uses UIImpactFeedbackGenerator (Taptic Engine): the style follows the amplitude
+// (light / medium / heavy) and the intensity maps to 0.30–1.00; on iPads / the simulator, which have no haptic motor,
+// the system ignores it and the game is unaffected. Zero amplitude should not reach here (filtered by the host).
+void front_haptic(float intensity) {
+    if (!(intensity > 0)) return;
+    if (intensity > 1.0f) intensity = 1.0f;
+    int style = intensity >= 0.75f ? 2 : intensity >= 0.45f ? 1 : 0;
+    CGFloat level = 0.30 + 0.70 * (double)intensity;
+    LOG("[haptic] 前端震动：振幅 %.2f → %s 档，强度 %.2f", (double)intensity,
+        style == 2 ? "重" : style == 1 ? "中" : "轻", (double)level);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        static UIImpactFeedbackGenerator *gen[3];   // 轻 / 中 / 重各一个（复用，避免每次新建） | one each for light / medium / heavy (reused, not recreated)
+        if (!gen[style]) gen[style] = [[UIImpactFeedbackGenerator alloc] initWithStyle:style == 2 ? UIImpactFeedbackStyleHeavy
+                                                                          : style == 1 ? UIImpactFeedbackStyleMedium : UIImpactFeedbackStyleLight];
+        [gen[style] prepare];
+        [gen[style] impactOccurredWithIntensity:level];
+    });
+}
+
 // ---------- EAGL 视图：多点触摸 → dm_touch_set ----------
 static void tap_a_pulse(void);   // 点按补 A（视图与测试脚本共用）| tap-to-A, shared by the view and the test hooks
 // 带坐标版本：帧同步鼠标点击要用真实落点（菜单项不在屏幕中心）；无坐标版本按屏幕中心补。

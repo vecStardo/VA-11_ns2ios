@@ -42,7 +42,8 @@ scene, but the full game loop has not been verified end to end.
 | Multiple dialogue advances (English / Chinese) | ✅ |
 | Save / load | ✅ basic read/write verified |
 | Audio (music / effects) | ✅ fixed and verified |
-| Full playthrough (bartending, all chapters, endings, all settings) | ❌ **not verified** |
+| HD rumble (Settings → HD Rumble) | ✅ host path + iOS haptics wired; trigger verified on the simulator, device feel pending |
+| Full playthrough (bartending, all chapters, endings, other settings) | ❌ **not verified** |
 
 Verified on the iOS Simulator and on a real device through LiveContainer.
 
@@ -165,11 +166,14 @@ tools/                          data tools (GML decoder, romfs patch, save helpe
 - `audio 统计` should show ~57 appended buffers/s, no zero-filled gaps, and zero underruns.
 - `渲染统计` shows ~27 FPS on the simulator and ~30 FPS on device (the game itself is locked to
   30 FPS; 60 FPS is neither expected nor required).
+- HD rumble: Settings → HD Rumble should add `[hid-vib] 首次震动` and one `[haptic] 前端震动` line to
+  `boot.txt` per click (the game itself sends amplitude 0 when switching to OFF, so that step is silent).
 
 ## Known limitations
 
-- Full playthrough has not been verified (bartending minigame, all chapters/endings, every setting,
-  long-session stability).
+- Full playthrough has not been verified (bartending minigame, all chapters/endings, other settings,
+  long-session stability); HD rumble's trigger path is verified on the simulator, real-device feel
+  is pending user confirmation.
 - Requires your own copy of the game, plus a one-time patching step for `game.win`.
 - The third-party Chinese patch for 1.0.1 is incompatible with the 1.0.0 data used here.
 - No App Store distribution; unsigned IPA only (sideloading required).
