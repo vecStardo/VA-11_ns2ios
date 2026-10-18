@@ -1728,3 +1728,30 @@ Apple 用户态**不允许**写 TPIDRRO_EL0，这条路封死。
 ### 工具
 - `tools/try_real_save.sh <存档目录> [秒数]`：链接 game.win（不复制 500MB）、复制其余存档文件、
   启动桌面宿主并自动点「Load」位置，最后打印关键日志行。
+
+## 重新梳理调用链：实参很可能不是「调用实参」，而是「实例/全局变量」（2026-10-18 21:5x）
+
+把错误信息里的 GML 调用栈按语义重排：
+
+```
+gml_Object_dialog_control_Create_0
+  → gml_Script_daycontrol
+    → gml_Script_day0control
+      → gml_Script_textbox_create
+        → gml_Object_obj_textbox_Other_10     （用户事件 10：加载文本框）
+          → gml_Script_textbox_loadbox         ← 这里索引 argument[0] 拿到未初始化值
+```
+
+关键点：`textbox_create` 与 `textbox_loadbox` 之间隔了一个 **obj_textbox 的用户事件 10**。
+GM 的 `event_user()` **不能传参**，所以 loadbox 用到的值只能来自 **实例变量**（textbox_create 里
+`self.xxx = argument0` 之类设置）。因此「0x78 填充值」最可能是：
+**textbox_create 拿到的参数本身来自某个未初始化的全局/实例变量**（`argument0` 传的是 undefined）。
+
+也就是说问题可能不在「函数调用传参」，而在**全局变量初始化没跑到**（day0 依赖的某个 global）。
+
+### 下一轮（有明确落点）
+1. 我们已经在 dump 里看到 GM 的常量池/表指针形态：`adrp xN,#G; ldr xN,[xN,#off]`；
+   在失败点把 `G` 表附近的内容 dump 出来，找出**全局变量数组**（元素是 16 字节 value）；
+2. 在那片 16 字节 value 里定位 0x3f8… 的值栈（我们已知失败值 0x3f804e970 位于一条
+   `{下一个槽指针, 0x7878…}` 的链上）→ 找到**值栈基址/栈顶**指针存在哪个全局里；
+3. 顺着这个全局反查「谁在启动时给它初始化」，确认我们的移植是否漏跑了一段初始化脚本。
