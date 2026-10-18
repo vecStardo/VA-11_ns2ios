@@ -1886,3 +1886,32 @@ GM 的 `event_user()` **不能传参**，所以 loadbox 用到的值只能来自
 1. 在**每次**数组取值时采样块1[13]，统计「src 与栈顶的差」分布：
    正常调用应当 src < 栈顶；若只有出错这一处是 src = 栈顶 + 0x10，就实锤「越界一个槽 = 少了实参」；
 2. 顺 `main+0xb19600` 这个块反查谁在写它（哪些函数更新栈顶），定位「本该压入实参却没有压」的那段代码。
+
+## 抑制数组报错后暴露出**真正的第一处错误**：`obj_textbox.input_text` 未设置（2026-10-19 01:4x）
+
+之前以为「抑制 main+0x1810c 的 b.eq」无效——**判断错了**。用 `patched_suppress` 产物再跑，日志里的错误其实换了一条：
+
+```
+ERROR in
+action number 1
+of Other Event: User Defined 0
+for object obj_textbox:
+
+Variable obj_textbox.input_text(101477, 0) not set before reading it.
+at gml_Script_textbox_loadbox
+```
+
+也就是说：
+1. 数组索引报错被成功跳过；
+2. 紧接着暴露出的**真正第一处错误**是 —— **`obj_textbox` 实例（id 101477）的 `input_text` 变量从未被设置**，
+   `textbox_loadbox` 去读它、再当数组索引 → 就是我们一直看到的「非数组索引」；
+3. 所以根因链是：`textbox_create`（或调用方）**本该给 `input_text` 赋值，却没有赋值**。
+
+这解释了此前所有观察：undefined（0xffffff）、0x78 填充、栈顶之上一个槽 —— 都是一个「从未赋值」的实例变量。
+
+### 下一轮（终于有了具体变量名，可以精准定位）
+1. 解析 `data.win` 的 `OBJT` chunk，拿到 `obj_textbox` 的变量表顺序/索引，
+   确定 `input_text` 在实例里的槽位偏移；
+2. 在失败点读实例 101477 的槽位，确认它确实是空；
+3. 再在 `textbox_create` 的路径上找「本该写入 input_text」的代码（变量索引在代码里是立即数），
+   反查它被哪一步跳过 —— 大概率仍是 `textbox_create` 的入参/上游全局没初始化。
