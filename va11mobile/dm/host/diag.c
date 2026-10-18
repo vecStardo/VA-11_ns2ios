@@ -444,6 +444,26 @@ static void setlang_obs(const uint64_t *regs) {
 // type tag, 2 = array), x2 = index.
 // 给调试器用的失败钩子：非数组索引发生时调用（空实现，lldb 在这里下断点即可抓到现场）。
 // Debugger hook: called when a non-array index happens (empty; set an lldb breakpoint here to catch the site).
+#if !TARGET_OS_IPHONE
+#include <mach/mach_vm.h>
+// 列出 [lo, lo+len) 范围内的所有 vm 区域（起点/大小/当前权限），用来把代码 dump 按映射边界切成
+// 「我们的模块 / 桩区 / 游戏代码区」，再分别做指令普查。
+// List every VM region inside [lo, lo+len) (start/size/current protection) so a code dump can be split along mapping
+// boundaries into "our modules / trampoline area / game code" before the instruction census.
+static void dm_log_regions(uint64_t lo, uint64_t len) {
+    mach_vm_address_t a = lo;
+    for (int k = 0; k < 12 && a < lo + len; k++) {
+        mach_vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_port_t obj = MACH_PORT_NULL;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_vm_address_t ra = a;
+        kern_return_t kr = mach_vm_region(mach_task_self(), &ra, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj);
+        if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+        if (kr != KERN_SUCCESS) { LOG("[va11] region 查询失败 kr=%d @ %p", (int)kr, (void *)(uintptr_t)a); break; }
+        LOG("[va11] region %p - %p  %#llx 字节  prot=%#x", (void *)(uintptr_t)ra, (void *)(uintptr_t)(ra + sz), (unsigned long long)sz, info.protection);
+        a = ra + sz;
+    }
+}
+#endif
 __attribute__((noinline)) void dm_array_fail_hook(void) { __asm__ volatile(""); }
 
 // 失败时把客体代码区 dump 到文件（DM_DUMPCODE=路径）：用来离线反汇编游戏自己那份 GML 编译代码，
@@ -451,11 +471,39 @@ __attribute__((noinline)) void dm_array_fail_hook(void) { __asm__ volatile(""); 
 // On failure dump the guest code region to a file (DM_DUMPCODE=path) so the game's own compiled GML code can be
 // disassembled offline and checked for svc / x18 / tpidr instructions that Apple's kernel cannot run natively and that
 // our rewriter never touched (it only rewrites main/sdk/subsdk*).
+#if !TARGET_OS_IPHONE
+// 找到 addr 所在映射，再取「其后最大的 RX 映射」（= 游戏自己的 GML 编译代码区），整段导出。
+// Find the mapping that holds addr, then take the largest RX mapping after it (the game's compiled GML code region) and
+// dump that whole region.
+static int dm_region_of(uint64_t addr, uint64_t *start, uint64_t *size, uint32_t *prot) {
+    mach_vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_port_t obj = MACH_PORT_NULL;
+    mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_vm_address_t a = addr;
+    kern_return_t kr = mach_vm_region(mach_task_self(), &a, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj);
+    if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+    if (kr != KERN_SUCCESS) return 0;
+    *start = a; *size = sz; *prot = info.protection; return 1;
+}
+#endif
 void dm_dump_code_at(uint64_t addr, size_t len) {
     const char *path = getenv("DM_DUMPCODE");
     if (!path || !*path || !addr) return;
     static int done; if (done++) return;
     uint64_t base = addr & ~(uint64_t)0xFFFFF;   // 1 MB 对齐（代码区一般按大页映射）
+#if !TARGET_OS_IPHONE
+    { uint64_t st = 0, sz = 0; uint32_t pr = 0;   // 取「所在映射之后最大的 RX 映射」= 游戏代码区
+      if (dm_region_of(addr, &st, &sz, &pr)) {
+          uint64_t best_start = 0, best_size = 0;
+          uint64_t a2 = st + sz;
+          for (int k = 0; k < 8; k++) {
+              uint64_t rs = 0, rsz = 0; uint32_t rp = 0;
+              if (!dm_region_of(a2, &rs, &rsz, &rp)) break;
+              if ((rp & 4) && rsz > best_size) { best_start = rs; best_size = rsz; }
+              a2 = rs + rsz;
+          }
+          if (best_size > 0x100000) { base = best_start; len = best_size;
+              LOG("[va11] 游戏代码区映射：%p - %p（%#llx 字节）", (void *)(uintptr_t)base, (void *)(uintptr_t)(base + len), (unsigned long long)len); }
+      } }
+#endif
     uint8_t *buf = malloc(len);
     vm_size_t got = 0;
     if (!buf) return;
@@ -516,6 +564,9 @@ static void va11_array_obs(const uint64_t *regs) {
     if ((uint32_t)idx == 0x80000000u) return;   // undefined 下标：游戏自己会走「未定义」分支 | undefined index: the game handles it
     dm_log_tlr("失败时");
     dm_array_fail_hook();                       // 调试器断点处（lldb: breakpoint set -n dm_array_fail_hook）
+#if !TARGET_OS_IPHONE
+    { void dm_log_regions(uint64_t, uint64_t); dm_log_regions(regs[30] & ~(uint64_t)0xFFFFF, 4u << 20); }
+#endif
     { void dm_dump_code_at(uint64_t, size_t); dm_dump_code_at(regs[30], 4u << 20); }   // DM_DUMPCODE：导出代码区 | dump the code region for offline analysis
 
     static int n; if (n++ > 40) return;
