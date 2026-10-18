@@ -734,6 +734,21 @@ static void dm_log_tlr(const char *tag) {
         LOG("[va11] TLR(%s)[%02x] %s", tag, part * 0x100, hx);
     }
 }
+// 「变量未设置」报错点观测（OBS_VARREAD，改写器插在 main+0x23000）：
+// x2 = 变量名字符串、x3 = 对象名、w4/w5 = 两个索引。命中说明某实例变量从未被赋值。
+// Observation at the "variable not set before reading" raise site (OBS_VARREAD at main+0x23000):
+// x2 = variable name string, x3 = object name, w4/w5 = indices. A hit means an instance variable was never assigned.
+int dm_host_readable(const void *addr, size_t len);
+static void va11_varread_obs(const uint64_t *regs) {
+    const char *vname = (const char *)(uintptr_t)regs[2];
+    const char *oname = (const char *)(uintptr_t)regs[3];
+    if (vname && dm_host_readable(vname, 1) && dm_host_readable(vname, 64)) { } else vname = "?";
+    if (oname && dm_host_readable(oname, 1) && dm_host_readable(oname, 64)) { } else oname = "?";
+    LOG("[va11] 变量未设置：对象=%s 变量=%s 索引 w4=%u w5=%u（x20=%llu x22=%llu x23=%llu）",
+        oname, vname, (unsigned)regs[4], (unsigned)regs[5],
+        (unsigned long long)regs[20], (unsigned long long)regs[22], (unsigned long long)regs[23]);
+}
+
 int dm_host_readable(const void *addr, size_t len);
 static void va11_array_obs(const uint64_t *regs) {
     uint64_t src = regs[1], idx = regs[2];
@@ -746,6 +761,20 @@ static void va11_array_obs(const uint64_t *regs) {
     // 这样能看到「崩溃前这串取值是怎么演化的」（正常数组读 vs 突然变成未定义值）。
     // Ring buffer: remember the last 16 indexed reads (source tag/index/address) and print them in order on failure, so the
     // evolution just before the crash is visible (normal array reads vs a sudden undefined value).
+    // 统计「src 与值栈栈顶（main+0xb19658 那格）的差」：正常调用应 src < top；越界时 src >= top。
+    // Statistics of (src - value-stack top), where the top is the cell at main+0xb19658: normal calls have src < top,
+    // out-of-bounds reads have src >= top.
+    { static int n_below, n_at, n_above, n_logged;
+      uint64_t base = (uint64_t)(uintptr_t)g_mod[0].base, top = 0;
+      if (vm_read_overwrite(mach_task_self(), (vm_address_t)(base + 0xb19658), 8, (vm_address_t)&top, (vm_size_t[]){0}) == 0 && top) {
+          int64_t d = (int64_t)src - (int64_t)top;
+          if (d < 0) n_below++; else if (d == 0) n_at++; else { n_above++;
+              if (n_logged++ < 12) LOG("[va11] 越界读取：src=%p 栈顶=%p 差=%+lld（标签=%u 下标=%lld）",
+                                       (void *)(uintptr_t)src, (void *)(uintptr_t)top, (long long)d, tag, (long long)(int32_t)idx); }
+      }
+      if (tag != 2 && n_below + n_at + n_above > 0)
+          LOG("[va11] 栈顶关系统计：src<top %d 次、src==top %d 次、src>top %d 次", n_below, n_at, n_above);
+    }
     { static struct { uint64_t src; int64_t idx; uint32_t tag; } ring[16]; static int rn, rpos;
       if (tag == 2) {
           { static int first; if (!first++) { void dm_sample_block(int,int); dm_sample_block(0,1); dm_sample_block(1,1); dm_log_tlr("首次取值");
@@ -966,6 +995,7 @@ void probe_install(void) {
     if (gate_obs_present(OBS_SETLANG)) gate_obs_set(OBS_SETLANG, setlang_obs);
     if (gate_obs_present(OBS_EVENT_MSG)) gate_obs_set(OBS_EVENT_MSG, event_msg_obs);
     if (gate_obs_present(OBS_ARRAY)) { gate_obs_set(OBS_ARRAY, va11_array_obs); LOG("VA-11：数组索引观测门已挂（OBS_ARRAY）"); }
+    if (gate_obs_present(OBS_VARREAD)) { gate_obs_set(OBS_VARREAD, va11_varread_obs); LOG("VA-11：变量未设置观测门已挂（OBS_VARREAD）"); }
     { void dm_ui_tooltip_obs(const uint64_t *regs); if (gate_obs_present(OBS_TOOLTIP)) gate_obs_set(OBS_TOOLTIP, dm_ui_tooltip_obs); }   // 说明框停靠（dm_cursor.c） | tooltip docking (dm_cursor.c)
     const char *ui = getenv("DM_UIMSG");
     if (ui && strcmp(ui, "1") && !(g_uifp = fopen(ui, "w"))) die("DM_UIMSG 打不开 %s", ui);

@@ -158,6 +158,11 @@ OBS = {'32d80c9afc27e2efebaa048b1e6a120c': [
     # VA-11 diagnostic: entry of the GML "index a value" runtime helper (x0 = destination value, x1 = source value
     # descriptor, x2 = index; w2 == 0x80000000 means an undefined index; tag = [x1+0xc]&0xffffff, 2 = array).
     # The host logs when the source is not an array, naming the variable textbox_loadbox indexes.
+    # VA-11 诊断：'Variable %s.%s(%d, %d) not set before reading it.' 的报错点（main+0x23000 起）
+    # x21=runtime, x2=变量名, x3=对象名, w4/w5=索引；命中即说明某实例变量从未被赋值。
+    # Runtime raise site for "Variable %s.%s(%d, %d) not set before reading it." (main+0x23000): x2 = variable name,
+    # x3 = object name, w4/w5 = indices; hitting it means an instance variable was never assigned.
+    (0x23014, 10, '2a1603e5', 'VA-11: "variable not set before reading" raise site (x2=var name, x3=obj name, w4/w5=indices)'),
     (0x18090, 9, 'f81c0ff7', 'VA-11: GML array-index runtime helper entry (x0 = dest value, x1 = source value descriptor, x2 = index); host logs non-array sources; original str x23, [sp, #-0x40]!'),
 ],
 'db0507f36b84200ac05f75d76ed5026f': [
@@ -838,7 +843,7 @@ for off, oid, ow, why in obs:
     assert f'{w:08x}' == ow, f'观测门原指令不符 {off:#x}：{w:08x}'
     # 只许函数入口：dm_gate 只回写 x0–x8 / x30，宿主 C 代码可能改 x9–x17；入口处这些按 AAPCS64 不承载值（参数只在 x0–x7 / x8）
     # Function entries only: dm_gate writes back only x0–x8 / x30, and host C code may modify x9–x17; at entry these carry no values under AAPCS64 (arguments are only in x0–x7 / x8)
-    assert off in set(starts) or (oid == 6 and off == 0x43ecc8), f'private obs point not approved {off:#x}'
+    assert off in set(starts) or (oid == 6 and off == 0x43ecc8) or (oid == 10 and off == 0x23014), f'private obs point not approved {off:#x}'
     assert off < TEXT_END and off not in kinds and not any(lo <= off < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'观测门与改写点冲突 {off:#x}'
     put_branch(off, site_obs(off, oid, w)); stat('obs')
 
