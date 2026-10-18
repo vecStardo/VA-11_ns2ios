@@ -2490,3 +2490,19 @@ LANGUAGE SELECT 界面选择即可。
   —— 说明对话队列、逐字/多行排版、角色立绘（Jill）、UI 都正常。
 
 ⇒ 移植的可玩性验证到这个程度：启动 → 语言选择 → 新游戏 → 酒吧场景 → 多段对话推进，均正常。
+
+## 语言选项在哪：不在 Settings，而在启动的 LANGUAGE SELECT（2026-10-19 19:0x）
+
+用户反馈「设置里找不到语言选项」——确认：这个游戏的语言**不在 Settings 菜单里**，
+而是 `languageselect` 房间的 **LANGUAGE SELECT** 画面（English / 日本語 / 简体中文，
+按钮对象 `eng_button` / `jp_button` / `cn_button`）。Switch 版默认用 `os_get_language()`
+自动决定并 **直接跳过该画面**，所以用户在菜单里找不到。
+
+解决：出两个「默认语言」版本的数据文件（其余相同）：
+
+| 文件 | 默认语言 | 验证 |
+|---|---|---|
+| `game_patched_EN.win` | 英文 | `out/day0_fixed.png`、`out/play_long.png` |
+| `game_patched_CN.win` | 简体中文 | `out/cn_default.png`（界面中文 + `Anna: 这样的登场方式如何?`） |
+
+生成方式：`tools/romfs_patch/apply_patch.sh <原版 game.win> <输出> [cn]`（第三个参数 `cn` 固定中文默认）。

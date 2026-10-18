@@ -30,7 +30,12 @@ va11mobile/
 1. 把 **打过台词补丁的 `game.win`** 放进 App 数据目录的 `Documents/save/game.win`
    （补丁与现成产物见 `tools/romfs_patch/` 与 iCloud `Va11IOS-patched-data/`）；
 2. 把 `eng/` 整个目录放进 `Documents/save/eng/`（`romfs/scripts/eng` 的内容，zip 同上）；
-3. 启动 App → 在 LANGUAGE SELECT 界面选 **English** 或 **简体中文** → 点新游戏即可进入酒吧场景。
+3. 启动 App → 点新游戏即可进入酒吧场景。
+
+**语言**：这个游戏的语言**不在 Settings 里**，而是在启动时的 `LANGUAGE SELECT` 画面选择；
+而 Switch 版默认按系统语言自动决定并跳过该画面。想直接进中文，请用 **中文默认版数据**
+（iCloud `Va11IOS-patched-data/game_patched_CN.win`，改名为 `game.win` 覆盖），
+英文版用 `game_patched_EN.win`；两者都已在模拟器验证（`out/day0_fixed.png` 英文、`out/cn_default.png` 中文）。
 
 > 语言：App 已内置 `eng / chn / jp` 三套台词文件（首次启动自动解到 `Documents/save/<lang>/`），
 > 中英日都能直接选；截图见 `out/day0_fixed.png`（英文）与 `out/cn_day0b.png`（中文）。
