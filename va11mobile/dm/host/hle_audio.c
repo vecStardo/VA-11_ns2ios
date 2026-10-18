@@ -153,6 +153,18 @@ static void downmix51(const int16_t *in, int16_t *out, unsigned frames) {
 static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
     (void)f; (void)ts; (void)bus; (void)frames;
     aout *a = ctx;
+    {   // 声卡回调布局诊断（只打前 3 次）：mNumberBuffers / mDataByteSize / 是否交错——非交错时只填 buffer0 会一半声道错位
+        static int n; if (n < 3) { n++;
+            LOG("audio 回调布局：buffers=%u frames=%u bus=%u b0bytes=%u b0data=%p",
+                (unsigned)bl->mNumberBuffers, (unsigned)frames, (unsigned)bus,
+                (unsigned)(bl->mNumberBuffers ? bl->mBuffers[0].mDataByteSize : 0),
+                bl->mNumberBuffers ? bl->mBuffers[0].mData : NULL);
+            for (unsigned i = 1; i < bl->mNumberBuffers && i < 4; i++)
+                LOG("audio 回调布局：buffer[%u] bytes=%u data=%p", i, (unsigned)bl->mBuffers[i].mDataByteSize, bl->mBuffers[i].mData);
+        }
+    }
+    { static FILE *df; static int don = -1; if (don < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); don = e != NULL; if (don && !(df = fopen(e, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", e); }
+      if (df) fwrite(bl->mBuffers[0].mData, 1, bl->mBuffers[0].mDataByteSize, df); }
     {   // 自检音：DM_AUDIO_TESTTONE=1 → 440 Hz 正弦（用来把「数据/格式问题」与「设备/会话问题」分开）
         static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_TESTTONE"); on = e && atoi(e); }
         if (on) {
@@ -172,10 +184,6 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
     if (!a->mix) pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
     else { int16_t *o = bl->mBuffers[0].mData; unsigned left = bl->mBuffers[0].mDataByteSize / 4;   // 双声道 16 位：每帧 4 字节 | stereo 16-bit: 4 bytes per frame
         while (left) { unsigned k = left < MIXMAX ? left : MIXMAX; pull(a, (uint8_t *)a->mixbuf, (uint64_t)k * 12); downmix51(a->mixbuf, o, k); o += 2 * k; left -= k; } }
-    // 诊断开关 DM_AUDIO_OUT_DUMP=<文件>：交给 CoreAudio 的那份数据原样续写（下混后是双声道）。本机没有回环设备录不到系统输出，判「对白有没有交出去」看这份
-    // Diagnostic switch DM_AUDIO_OUT_DUMP=<file>: append the data handed to CoreAudio as is (stereo after the downmix). This machine has no loopback device and cannot record the system output; to tell whether the dialogue was handed over, look at this file
-    { static FILE *df; static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_OUT_DUMP"); on = e != NULL; if (on && !(df = fopen(e, "wb"))) LOG("【红】DM_AUDIO_OUT_DUMP 打不开 %s", e); }
-      if (df) fwrite(bl->mBuffers[0].mData, 1, bl->mBuffers[0].mDataByteSize, df); }
     { int q = nq_phase(); atomic_fetch_add_explicit(&g_nq_calls[q], 1, memory_order_relaxed); if (a->dry) atomic_fetch_add_explicit(&g_nq_dry[q], 1, memory_order_relaxed); }
     atomic_fetch_add_explicit(&a->st_calls, 1, memory_order_relaxed);
     if (a->dry) atomic_fetch_add_explicit(&a->st_dry, 1, memory_order_relaxed);   // 通知线程 QoS 对照：按当前相记 | Notification thread QoS comparison: recorded per current phase
@@ -290,6 +298,7 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     LOG("audio::OpenAudioOut %s 声道 %d %s", name ? name : "(默认)", ch, real_audio() ? "真出声" : "静音接收端");
     if (real_audio()) au_open(a);   // 开不了就 a->au 为空，开始播放时走静音接收端 | if it cannot be opened, a->au is null, and playback goes to the silent sink when it starts
     atomic_store_explicit(&a->st_run, 1, memory_order_relaxed); pthread_create(&a->st_th, NULL, audio_stats, a);
+    { const char *tt = getenv("DM_AUDIO_TESTTONE"); if (tt && atoi(tt) && a->au) { atomic_store_explicit(&a->state, STATE_STARTED, memory_order_release); OSStatus os_ = AudioOutputUnitStart(a->au); LOG("audio 自检音：主动启动 AudioUnit（%d）", (int)os_); } }
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result, h_au_Start, void *g) {
@@ -440,6 +449,7 @@ HLE_FORCE("_ZN2nn5audio22ProcessResamplerBufferEPNS0_13ResamplerTypeEPiPsmPKsi",
     const struct va11_rs *r = (const struct va11_rs *)type;
     int ch = r->ch ? r->ch : 2;
     double ratio = r->rate_src ? (double)r->rate_dst / r->rate_src : 1.0;
+    { static int n; if (n < 6) { n++; LOG("audio::ProcessResamplerBuffer %d→%d ch=%d src=%d dst_bytes=%lu", r->rate_src, r->rate_dst, ch, src_count, dst_bytes); } }
     int frames = src_count / (ch ? ch : 1);
     int64_t out_frames = (int64_t)(frames * ratio);
     unsigned long cap = dst_bytes / (unsigned)ch / 2;
