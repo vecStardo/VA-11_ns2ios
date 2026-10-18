@@ -297,7 +297,7 @@ A 按住数秒（`buttons=0x1` 连续多秒）与带落点点击都没有推进�
 - `nsz -D` 解 NSZ→NSP 可以，但 `nsz -x` 无法从 NSP 递归解出 NCA 内容（需要 title key，
   `--titlekeys` 生成 title.keys 后 nsz 仍报 `MissingTitleKeyError`）；
 - 绕开 nsz：早前工具 `tools/va11_extract.py` 已把明文 dump（NCZ 段 cryptoType=1，无需 keys）解成
-  `~/va11-work/program.nca`；romfs 的 data 段就是 `FORM + len + GEN8` 的 GameMaker 容器。
+  `work//program.nca`；romfs 的 data 段就是 `FORM + len + GEN8` 的 GameMaker 容器。
   新增 `tools/extract_original_game_win.py` 按该特征扫描落盘：
   `game.win: 520720771 字节 @ 0x47e200, sha256 e860d56e709c1883…`（补丁版是 `ff5220e0…`，同尺寸）。
 
@@ -313,10 +313,10 @@ A 按住数秒（`buttons=0x1` 连续多秒）与带落点点击都没有推进�
 
 ### 复现命令
 ```
-nsz -D -o ~/va11-work/orig "…/[010086500D3C8000][v0].nsz"           # 解成 nsp
-python3 tools/va11_extract.py <ncz> ~/va11-work                      # 解出 program.nca（明文段）
-python3 tools/extract_original_game_win.py ~/va11-work/program.nca ~/va11-work/orig/game.win
-cp ~/va11-work/orig/game.win <App 容器>/Documents/save/game.win      # 模拟器对照用
+nsz -D -o work//orig "…/[010086500D3C8000][v0].nsz"           # 解成 nsp
+python3 tools/va11_extract.py <ncz> work/                      # 解出 program.nca（明文段）
+python3 tools/extract_original_game_win.py work//program.nca work//orig/game.win
+cp work//orig/game.win <App 容器>/Documents/save/game.win      # 模拟器对照用
 ```
 
 ## focus/许可门控排查 + 「点按确实改变了行为」（2026-10-18 10:5x）
@@ -373,7 +373,7 @@ gamepad 常量），而不是命中区或键位本身。
 
 ## runner 的 hid 导入清单（反汇编前的地基，2026-10-18 11:1x）
 
-`~/va11-work/exefs/*.bin` 是解压后的模块载荷（`.nso` 里各段是压缩的，直接 grep 原文件拿不到符号）。
+`work//exefs/*.bin` 是解压后的模块载荷（`.nso` 里各段是压缩的，直接 grep 原文件拿不到符号）。
 在 `main.bin`（GameMaker 官方 runner）里可以 grep 到它**导入的全部 46 个 nn::hid 符号**，输入相关的正是：
 
 ```
@@ -1021,7 +1021,7 @@ tools/repro_day0.sh 80
 这样能立刻看出 `textbox_loadbox` 索引的是哪个变量、它当时的真实类型（0=undefined/1=字符串/3=结构体…）。
 
 脚本化路径：
-1. `~/va11-work/patched/main.cuts.tsv` 已有「按原始字节校验的代码补丁」机制（格式：偏移 / 原字 / 新字 / 全 / 说明），
+1. `work//patched/main.cuts.tsv` 已有「按原始字节校验的代码补丁」机制（格式：偏移 / 原字 / 新字 / 全 / 说明），
    可在构建期把检查点改成跳到宿主钩子（宿主地址由 loader 的 gate 机制在装载期写入）；
 2. 或者先走「零补丁」路线：在 `dm_in_show_message` 里沿 fp 链定位 `LR==main+0x1811c` 的帧，
    把该帧保存的 x20（描述符）读出来（描述符在栈上，读取前用 `g_as…g_as+RESERVE` 范围做校验），
@@ -1206,7 +1206,7 @@ tools/repro_day0.sh 80
 有人怀疑「boot 期那两条 VA-11 剪口（把 preselected_user 固定成 False / 无用户）改变了初始化路径」。
 做了一次干净对照：
 
-1. 用**不带 DM_FOREIGN_GAME 剪口**的改写产物（`~/va11-work/patched_nocut`，main.cuts.tsv 只有表头）重出 App；
+1. 用**不带 DM_FOREIGN_GAME 剪口**的改写产物（`work//patched_nocut`，main.cuts.tsv 只有表头）重出 App；
 2. 同时在 App 的 `Documents/save/` 里放上 `preselected_user`（内容 `False`，5 字节）；
 3. 重新复现。
 
@@ -1328,8 +1328,8 @@ lldb 断点 `main+0x18090`（数组 helper）与 `main+0x2eb60`（show_message�
 
 ```
 make -C va11mobile/dm/host dmhost_m3      # 构建成功，产出 ./dmhost_m3（2.19 MB）
-DM_HLE_TOLERANT=1 DM_SAVE=~/va11-work/run_mac/save DM_TEMP=... DM_ROMFS=... \
-  ./dmhost_m3 ~/va11-work/patched_obs main sdk subsdk0 subsdk1
+DM_HLE_TOLERANT=1 DM_SAVE=work//run_mac/save DM_TEMP=... DM_ROMFS=... \
+  ./dmhost_m3 work//patched_obs main sdk subsdk0 subsdk1
 ```
 
 注意事项与结果：
@@ -1358,7 +1358,7 @@ DM_HLE_TOLERANT=1 DM_SAVE=~/va11-work/run_mac/save DM_TEMP=... DM_ROMFS=... \
 
 ```
 DM_HEADLESS=1 DM_HLE_TOLERANT=1 DM_TAP="12000:0.5,0.5;20000:0.12,0.15;27000:0.37,0.75;31000:0.37,0.75" \
-  ./dmhost_m3 ~/va11-work/patched_obs main sdk subsdk0 subsdk1
+  ./dmhost_m3 work//patched_obs main sdk subsdk0 subsdk1
 ```
 
 **结果：桌面宿主完整复现同一个 bug**——
@@ -1473,7 +1473,7 @@ caller 偏移 0x8e7c8，指纹首 16 字节 a0feffd0 000040f9 2100008b 200040f9
 
 ### 实验 B：临时抑制「非数组索引」报错
 用 `patch_nso.py` 的 CUTS 机制把 `main+0x1810c` 的 `b.eq` 改成无条件 `b`（跳过报错），
-`DM_VA11_SUPPRESS_ARRAY_ERR=1` 才生效（实验产物 `~/va11-work/patched_suppress`）。结果：
+`DM_VA11_SUPPRESS_ARRAY_ERR=1` 才生效（实验产物 `work//patched_suppress`）。结果：
 
 - 同样的非数组索引日志仍然打印；
 - 报错**仍然出现**（`gml_Script_day0control / gml_Object_dialog_control_Create_0`）→
@@ -2423,7 +2423,7 @@ if (global.consoles_flag) {
 
 ## romfs 提取尝试（2026-10-19 16:5x）
 
-已把 NSP 解包：`~/va11-work/extract_x/game/` 下得到 NCZ/NCA 与 **`.tik`（ticket）**；
+已把 NSP 解包：`work//extract_x/game/` 下得到 NCZ/NCA 与 **`.tik`（ticket）**；
 NCZ 也已解成本地 NCA（585 MB）。但 NCA 是加密的（header 用 header_key XTS，section 用票内 title key），
 直接搜 `IVFC` / `[st_pointer]` 都搜不到，说明 romfs 内容尚未解密。
 

@@ -9,7 +9,7 @@
 - macOS 15.7.3 / Node v26.8.2 / npm 11.19.1
 - `rea-agents` **6.7.0**（`npm i rea-agents@6.7.0`，装在 `out/rea-probe/`，该目录在 `.gitignore` 内，不入库）
 - 目标：汉化补丁 `romfs/game.win`，`520,720,771` 字节，头 `FORM <len> GEN8`（`file` 报 **IFF data**）
-- 对照目标：`Info.plist`（REA 认识的格式）、`~/va11-work/exefs/main`（Switch NSO）
+- 对照目标：`Info.plist`（REA 认识的格式）、`work//exefs/main`（Switch NSO）
 
 ## 实测命令与结果（全部 exit=1）
 

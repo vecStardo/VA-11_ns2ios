@@ -14,7 +14,8 @@ import struct
 import sys
 import os
 
-WORK = os.path.expanduser(os.environ.get("VA11_WORK", "~/va11-work"))
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORK = os.path.expanduser(os.environ.get("VA11_WORK", os.path.join(_REPO, "..", "work")))
 GAME = os.environ.get("VA11_GAME_WIN", os.path.join(WORK, "orig/game.win"))
 d = open(GAME, "rb").read()
 

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Va11IOS 无签名出包：改写映像内嵌 → xcodebuild（CODE_SIGNING_ALLOWED=NO）→ Payload → .ipa → 结构校验。
 # 产物与校验报告在 out/（不进仓）。用法：./build.sh [--gen-only]
-# 用法示例：DM_PATCHED=~/va11-work/patched ./build.sh
+# 用法示例：DM_PATCHED=../../../work/patched ./build.sh
+# 工作目录约定：与仓库同级的 work/（可用 VA11_WORK 覆盖）；详见 README「工作目录」一节。
 # Va11IOS unsigned packaging: embed rewritten images -> xcodebuild (CODE_SIGNING_ALLOWED=NO) -> Payload ->
 # .ipa -> structural verification. Artifacts and the report live in out/ (not committed). Usage: ./build.sh
 set -euo pipefail
@@ -11,8 +12,9 @@ HERE=$(pwd)
 # Version: $DM_VERSION first, then va11mobile/VERSION; build number = current git commit count (monotonic).
 VER=${DM_VERSION:-$(cat "$HERE/../VERSION" 2>/dev/null || echo 0.0.0)}
 BUILDNO=$(git -C "$HERE" rev-list --count HEAD 2>/dev/null || echo 1)
-PATCHED=${DM_PATCHED:-$HOME/va11-work/patched}
-OUT=${DM_OUT:-$HERE/out}
+WORKDIR=${VA11_WORK:-$(cd "$HERE/../../.." && pwd)/work}
+PATCHED=${DM_PATCHED:-$WORKDIR/patched}
+OUT=${DM_OUT:-$WORKDIR/out}
 MODS=${DM_MODS:-"main sdk subsdk0 subsdk1"}
 t(){ echo "[$(date +%T)] $*"; }
 [ -d "$PATCHED" ] || { t "🔴 改写产物目录不在: ${PATCHED}（DM_PATCHED=... 指一下）"; exit 1; }
@@ -46,7 +48,7 @@ for m in $MODS; do cp "$PATCHED/$m.fixups.tsv" "$PATCHED/$m.gates.tsv" Resources
 # 台词文本（romfs/scripts/<lang>）：放进产物 dm/ 下，App 首次启动会解到 Documents/save/<lang>
 # Dialogue texts (romfs/scripts/<lang>): bundled under the product's dm/ folder; the app extracts them into
 # Documents/save/<lang> on first launch. Source: $DM_TEXTS_ROMFS (defaults to the repo's extracted romfs).
-TEXTS=${DM_TEXTS_ROMFS:-"$HERE/../../赛博朋克酒保行动 Cyberpunk Bartender Action/romfs/scripts"}
+TEXTS=${DM_TEXTS_ROMFS:-"$WORKDIR/game/romfs/scripts"}
 # 每次都先清掉上次内置的台词，避免改了 DM_TEXTS_ROMFS 后旧台词仍被打进包
 # Always drop previously bundled dialogue texts first, so changing DM_TEXTS_ROMFS cannot leak stale files.
 for L in eng chn jp; do rm -rf "Resources/dm/$L"; done

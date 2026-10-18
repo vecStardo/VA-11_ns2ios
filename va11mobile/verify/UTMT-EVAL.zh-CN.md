@@ -10,7 +10,7 @@
 ## 实测环境
 
 - macOS 15.7.3（arm64），UTMT **0.9.2.0**，资产 `UTMT_CLI_v0.9.2.0-macOS.zip`（58 MB，自包含 .NET，无需装 dotnet）
-- 目标：汉化补丁 `romfs/game.win`（520,720,771 B）；对照：未汉化原版 `~/va11-work/orig/game.win`
+- 目标：汉化补丁 `romfs/game.win`（520,720,771 B）；对照：未汉化原版 `work//orig/game.win`
 - 安装位置 `out/utmt/`（gitignored）：`app/UndertaleModCli`；工作目录 `out/utmt/`
 
 ## 加载结果（`UndertaleModCli info`）
@@ -93,7 +93,7 @@ ds_map_set(global.dialog_files_texts, ds_list_find_value(global.dialog_files, cu
 
 ### 证据：这批 `.ini` 确实在游戏 NCA 里（只是没被取出）
 
-对 `~/va11-work/program.nca` 做字节统计（python `bytes.count`）：
+对 `work//program.nca` 做字节统计（python `bytes.count`）：
 
 | 模式 | 出现次数 | 说明 |
 |---|---|---|

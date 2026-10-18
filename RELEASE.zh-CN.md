@@ -25,7 +25,7 @@
 
 ```sh
 cd va11mobile/iosapp
-DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=~/va11-work/patched ./build.sh
+DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=work//patched ./build.sh
 ```
 
 （产物约 16 MB，只有宿主代码；台词由使用者自己放进 `Documents/save/`。）

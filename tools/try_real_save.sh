@@ -9,7 +9,7 @@ set -eu
 SAVE=$1
 SECS=${2:-60}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-VA11_WORK=${VA11_WORK:-$HOME/va11-work}
+VA11_WORK=${VA11_WORK:-$(cd "$(dirname "$0")/../.." && pwd)/work}
 WORK=$VA11_WORK/run_real
 [ -f "$SAVE/game.win" ] || { echo "🔴 $SAVE 里没有 game.win"; exit 1; }
 rm -rf "$WORK"; mkdir -p "$WORK/save" "$WORK/temp"

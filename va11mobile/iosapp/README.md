@@ -44,11 +44,11 @@ iOS 上不能这么干：出包时由 `patch_product_ios.py` 落到内嵌用的�
 ## 构建与验证
 
 ```
-DM_PATCHED=~/va11-work/patched ./build.sh     # 无签名 .ipa → out/Va11IOS-unsigned.ipa + out/verify.txt（结构自检）
+DM_PATCHED=work//patched ./build.sh     # 无签名 .ipa → out/Va11IOS-unsigned.ipa + out/verify.txt（结构自检）
 ./smoke_sim.sh                                # 模拟器冒烟：装机 → 塞 game.win → 启动 → 等主循环 → 截图，判 GAME-OK/RED
 ```
 
-- `build.sh` 需要 `dm/ios/tools/gen_embed.py`（与 d2r-mobile 同一份）和改写产物目录（`DM_PATCHED`，缺省 `~/va11-work/patched`，
+- `build.sh` 需要 `dm/ios/tools/gen_embed.py`（与 d2r-mobile 同一份）和改写产物目录（`DM_PATCHED`，缺省 `work//patched`，
   含 `main/sdk/subsdk0/subsdk1` 的 `.patched.bin` 与 `.fixups.tsv`/`.gates.tsv`）。
 - `smoke_sim.sh` 的 `game.win` 缺省从本仓 `赛博朋克酒保行动…/1.0.0汉化补丁/010086500D3C8000/romfs/game.win` 取，
   可用 `DM_GAME_WIN=...` 覆盖；模拟器容器里用 APFS 克隆放置，不额外占空间。
@@ -92,7 +92,7 @@ four embedded module images, and the GM runner draws with GLES, reads `save:/gam
 through RemoteIO, and reads touches pushed by the view via `dm_touch_set`. `glBindFramebuffer(0)` is remapped to the host
 FBO and `eglSwapBuffers` presents it.
 
-Build and check: `DM_PATCHED=~/va11-work/patched ./build.sh` (unsigned `.ipa` plus a structural report), then
+Build and check: `DM_PATCHED=work//patched ./build.sh` (unsigned `.ipa` plus a structural report), then
 `./smoke_sim.sh` (installs in the simulator, stages `game.win` with an APFS clone, waits for the main loop, screenshots,
 verdict GAME-OK/RED). On a device, put `game.win` and `preselected_user` into the App's `save` folder through the Files app.
 

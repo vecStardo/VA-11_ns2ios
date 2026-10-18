@@ -7,7 +7,7 @@ NSZ 明文 dump（NCZ 段落 cryptoType=1，无需 keys）解出的 program.nca 
 本脚本按这个特征扫描并落盘，输出 SHA-256 供对照。
 
 用法 / Usage:
-  python3 tools/extract_original_game_win.py ~/va11-work/program.nca ~/va11-work/orig/game.win
+  python3 tools/extract_original_game_win.py <work>/program.nca <work>/orig/game.win
 """
 import hashlib
 import struct

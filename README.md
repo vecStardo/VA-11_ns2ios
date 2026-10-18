@@ -70,29 +70,36 @@ Diagnostics are written to `Documents/boot.txt`; attach it when reporting issues
 ## Build from source (developers)
 
 ```sh
-# 1) rewrite the four game modules for Apple silicon (outputs to ~/va11-work/patched)
+# 1) rewrite the four game modules for Apple silicon (outputs to work//patched)
 DM_FOREIGN_GAME=1 DM_RULESET=native python3 va11mobile/dm/tools/patch_nso.py <exefs/main> <out> main
 #    … repeat for sdk, subsdk0, subsdk1
 
 # 2) package the unsigned IPA
 cd va11mobile/iosapp
-DM_PATCHED=~/va11-work/patched ./build.sh                 # bundles eng/chn/jp dialogue texts
-DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=~/va11-work/patched ./build.sh   # clean build, no game text
+DM_PATCHED=work//patched ./build.sh                 # bundles eng/chn/jp dialogue texts
+DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=work//patched ./build.sh   # clean build, no game text
 ```
 
 The build script embeds the rewritten images, runs `xcodebuild` (unsigned, arm64), assembles the
-`Payload`, writes `out/Va11IOS-<version>-unsigned.ipa`, and verifies the result (segments, bundle,
+`Payload`, writes `work/out/Va11IOS-<version>-unsigned.ipa`, and verifies the result (segments, bundle,
 version, ad-hoc signing rehearsal) — it must report **0 red items**.
 
-## Working directory (why it lives outside the repository)
+## Directory layout (three siblings)
 
-The build workspace defaults to `~/va11-work` (override with `VA11_WORK=/path/to/work`). It holds the
-extracted game files, the rewritten modules and big debug dumps — hundreds of megabytes to tens of
-gigabytes, and it contains game data and keys. It is deliberately **outside** this repository,
-following the d2r-mobile convention (`$DM_ROOT`):
+```
+VA-11_ios/                working root (not a git repository)
+├── d2r-mobile/           reference project (origin of the porting lineage)
+├── work/                 build workspace (game data / rewritten modules / keys / debug dumps)
+└── VA-11_ns2ios/         this repository (git)
+```
 
-- the repository can stay clean and small (currently ~200 MB without the game data folder), and
-  `git status` never trips over 500 MB binaries or keys;
+`work/` lives next to the repository by default (`VA11_WORK` overrides it). It holds the extracted game
+files, the rewritten modules, keys and large debug output — from hundreds of megabytes to tens of
+gigabytes. It is deliberately **outside** the repository, following the d2r-mobile `$DM_ROOT`
+convention:
+
+- the repository stays clean and small (~200 MB without the game folder), and `git status` never
+  trips over 500 MB binaries or keys;
 - legal boundary: game data and keys never sit under a git root, so they cannot be committed by
   accident;
 - backups/sync tools and IDEs do not index or upload tens of gigabytes of transient dumps.
@@ -100,15 +107,16 @@ following the d2r-mobile convention (`$DM_ROOT`):
 Typical layout:
 
 ```
-~/va11-work/
+work/
   orig/game.win      extracted data (yours)
   exefs/             original game modules (yours)
   patched/           rewritten modules used for packaging
+  game/              game data / romfs (yours; scripts and the packager default to its dialogue folder)
   keys/prod.keys     your keys (never in the repo)
-  extract_x/         NSP extraction scratch (can be deleted)
+  out/               debug artefacts (formerly out/)
 ```
 
-Set `VA11_WORK=...` to relocate it; the helper scripts and `tools/` honor that variable.
+Set `VA11_WORK=...` to relocate it; the helper scripts, `tools/` and `build.sh` honor that variable.
 
 ## Repository layout
 

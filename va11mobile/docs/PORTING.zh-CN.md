@@ -25,7 +25,7 @@
 ## 准备游戏文件（必须自备）
 
 1. 购买并解包 Switch 版《VA-11 HALL-A》（本仓库用 1.0.0 汉化补丁的 `game.win` 验证）。
-2. 用 `dm/tools/patch_nso.py` 改写 ExeFS 里的 `main`、`sdk`、`subsdk0`、`subsdk1`，产物目录（缺省 `~/va11-work/patched`）
+2. 用 `dm/tools/patch_nso.py` 改写 ExeFS 里的 `main`、`sdk`、`subsdk0`、`subsdk1`，产物目录（缺省 `work//patched`）
    需要 `*.patched.bin` + `*.fixups.tsv` + `*.gates.tsv`。
 3. `game.win`（约 520 MB）与 `preselected_user`（内容 `False`）在装机后放进 App 的 `Documents/save/`。
 
@@ -35,7 +35,7 @@
 
 ```sh
 cd va11mobile/iosapp
-DM_PATCHED=~/va11-work/patched ./build.sh      # → out/Va11IOS-unsigned.ipa + out/verify.txt（结构校验）
+DM_PATCHED=work//patched ./build.sh      # → out/Va11IOS-unsigned.ipa + out/verify.txt（结构校验）
 ./smoke_sim.sh                                  # 模拟器冒烟：装 GAME-OK 判定 + 截图
 ```
 
@@ -94,7 +94,7 @@ DM_PATCHED=~/va11-work/patched ./build.sh      # → out/Va11IOS-unsigned.ipa + 
   这只是为了「装上就能玩」；如果你要一个**不含任何游戏内容的干净包**，用：
   ```sh
   cd va11mobile/iosapp
-  DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=~/va11-work/patched ./build.sh
+  DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=work//patched ./build.sh
   ```
   这样打出的 IPA 只有宿主代码（~16 MB），首次启动不会解台词，需要用户自己把
   `eng/`（或 `chn/`）目录放进 `Documents/save/`；

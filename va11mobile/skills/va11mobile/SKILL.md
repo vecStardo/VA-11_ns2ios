@@ -56,9 +56,9 @@ tools/romfs_patch/apply_patch.sh <原版 game.win> game_patched_CN.win cn
 ### 3. 出包
 
 ```sh
-# 先按 README「构建与出包」准备改写后的模块（patch_nso.py → ~/va11-work/patched）
+# 先按 README「构建与出包」准备改写后的模块（patch_nso.py → work//patched）
 cd va11mobile/iosapp
-DM_PATCHED=~/va11-work/patched ./build.sh
+DM_PATCHED=work//patched ./build.sh
 # 产物：out/Va11IOS-unsigned.ipa（脚本会做结构校验，要求 0 项红）
 ```
 

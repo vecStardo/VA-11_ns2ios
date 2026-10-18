@@ -66,24 +66,30 @@ iPhone / iPad 上。本仓库提供该游戏（GameMaker / Switch 构建）的 i
 ## 从源码构建（开发者）
 
 ```sh
-# 1) 把四个游戏模块改写为 Apple silicon 可执行（输出到 ~/va11-work/patched）
+# 1) 把四个游戏模块改写为 Apple silicon 可执行（输出到 work//patched）
 DM_FOREIGN_GAME=1 DM_RULESET=native python3 va11mobile/dm/tools/patch_nso.py <exefs/main> <out> main
 #    sdk / subsdk0 / subsdk1 同理
 
 # 2) 打出无签名 IPA
 cd va11mobile/iosapp
-DM_PATCHED=~/va11-work/patched ./build.sh                 # 内置 eng/chn/jp 台词
-DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=~/va11-work/patched ./build.sh   # 干净包（不含游戏文本）
+DM_PATCHED=work//patched ./build.sh                 # 内置 eng/chn/jp 台词
+DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=work//patched ./build.sh   # 干净包（不含游戏文本）
 ```
 
-出包脚本会完成：内嵌映像 → `xcodebuild`（无签名、arm64）→ `Payload` → `out/Va11IOS-<版本>-unsigned.ipa`
+出包脚本会完成：内嵌映像 → `xcodebuild`（无签名、arm64）→ `Payload` → `work/out/Va11IOS-<版本>-unsigned.ipa`
 → 结构校验（段 / bundle / 版本号 / ad-hoc 签名演练），必须报告 **0 项红**。
 
-## 工作目录（为什么不在仓库里）
+## 目录结构（三个同级目录）
 
-构建工作目录默认是 `~/va11-work`（可用 `VA11_WORK=/路径` 改）。它存放解包后的游戏文件、改写后的模块
-和大量调试 dump——从几百 MB 到几十 GB，并且包含游戏数据与密钥。把它**刻意放在仓库之外**，
-沿用 d2r-mobile 的 `$DM_ROOT` 约定：
+```
+VA-11_ios/                工作根（不属于任何 git 仓库）
+├── d2r-mobile/           参考项目（移植血统来源）
+├── work/                 构建工作目录（游戏文件 / 改写产物 / 密钥 / 调试 dump）
+└── VA-11_ns2ios/         本仓库（git）
+```
+
+`work/` 默认与仓库同级（`VA11_WORK` 可改）；它存放解包后的游戏文件、改写后的模块、密钥和大量调试 dump
+——从几百 MB 到几十 GB，并且包含游戏数据与密钥。把它**刻意放在仓库之外**，沿用 d2r-mobile 的 `$DM_ROOT` 约定：
 
 - 仓库保持干净、体积可控（不含游戏目录时约 200 MB），`git status` 不会碰到 500 MB 的二进制或密钥；
 - 合法边界：游戏数据与密钥永远不在 git 根目录下，不可能被误提交；
@@ -92,15 +98,16 @@ DM_TEXTS_ROMFS=/nonexistent DM_PATCHED=~/va11-work/patched ./build.sh   # 干净
 典型结构：
 
 ```
-~/va11-work/
+work/
   orig/game.win      解包数据（你自己的）
   exefs/             原始游戏模块（你自己的）
   patched/           出包用的改写产物
+  game/              游戏数据/romfs（你自己的，工具与出包脚本默认从这里取台词）
   keys/prod.keys     你的密钥（永不进仓库）
-  extract_x/         NSP 解包临时目录（可删）
+  out/               调试产物（原 out/）
 ```
 
-需要换位置时设 `VA11_WORK=...`，辅助脚本与 `tools/` 都会跟随该变量。
+需要换位置时设 `VA11_WORK=...`，辅助脚本、`tools/` 与 `build.sh` 都会跟随该变量。
 
 ## 仓库结构
 
