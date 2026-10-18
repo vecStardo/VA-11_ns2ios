@@ -1,5 +1,7 @@
 # VA-11 HALL-A · NS → iOS 移植（VA-11_ns2ios）
 
+**当前版本：v1.0.0（首个正式版本 · 初版移植）** · 更新日志见 [`CHANGELOG.md`](../CHANGELOG.md)
+
 仓库：<https://github.com/vecStardo/VA-11_ns2ios>
 
 把已购买的《VA-11 HALL-A》（Nintendo Switch 版）跑在 iPhone / iPad 上，

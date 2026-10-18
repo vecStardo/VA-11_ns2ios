@@ -41,7 +41,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.va11.mobile
         PRODUCT_NAME: Va11IOS
-        MARKETING_VERSION: 0.1.0
+        # 版本号由 build.sh 通过 xcodebuild 参数覆盖（MARKETING_VERSION / CURRENT_PROJECT_VERSION）；
+        # 这里的值只是兜底默认，版本源头是 va11mobile/VERSION。
+        # The version comes from build.sh via xcodebuild overrides; these are fallbacks, the source of truth is
+        # va11mobile/VERSION.
+        MARKETING_VERSION: 1.0.0
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO

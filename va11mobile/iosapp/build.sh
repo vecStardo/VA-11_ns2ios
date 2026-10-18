@@ -7,6 +7,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 HERE=$(pwd)
+# 版本号：优先 $DM_VERSION，其次 va11mobile/VERSION 文件；构建号 = 当前 git 提交数（单调递增）
+# Version: $DM_VERSION first, then va11mobile/VERSION; build number = current git commit count (monotonic).
+VER=${DM_VERSION:-$(cat "$HERE/../VERSION" 2>/dev/null || echo 0.0.0)}
+BUILDNO=$(git -C "$HERE" rev-list --count HEAD 2>/dev/null || echo 1)
 PATCHED=${DM_PATCHED:-$HOME/va11-work/patched}
 OUT=${DM_OUT:-$HERE/out}
 MODS=${DM_MODS:-"main sdk subsdk0 subsdk1"}
@@ -64,6 +68,7 @@ DD=$HERE/Gen/dd
 xcodebuild -project Va11IOS.xcodeproj -scheme Va11IOS -configuration Release \
   -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+  MARKETING_VERSION="$VER" CURRENT_PROJECT_VERSION="$BUILDNO" \
   build > Gen/build.log 2>&1 || { t "🔴 构建失败（Gen/build.log）"; grep -E "error:" Gen/build.log | head -5; exit 1; }
 APP="$DD/Build/Products/Release-iphoneos/Va11IOS.app"
 [ -d "$APP" ] || { t "🔴 产物不在：$APP"; exit 1; }
@@ -73,7 +78,7 @@ t "打包 Payload → ipa"
 STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/Payload" && cp -R "$APP" "$STAGE/Payload/"
 mkdir -p "$OUT"; rm -f "$OUT"/*.ipa
-IPA="$OUT/Va11IOS-unsigned.ipa"
+IPA="$OUT/Va11IOS-$VER-unsigned.ipa"
 (cd "$STAGE" && zip -qyr "$IPA" Payload)
 unzip -t "$IPA" > /dev/null || { t "🔴 ipa zip 完整性失败"; exit 1; }
 
@@ -82,8 +87,12 @@ t "结构校验"
 EXE="$STAGE/Payload/Va11IOS.app/Va11IOS"
 R="$OUT/verify.txt"; : > "$R"
 say(){ echo "$*" | tee -a "$R"; }
-say "== Va11IOS-unsigned.ipa 结构校验 $(date '+%F %T')"
+say "== Va11IOS-$VER-unsigned.ipa 结构校验 $(date '+%F %T')（版本 $VER build $BUILDNO）"
 say "ipa: $(du -h "$IPA" | cut -f1)  exe: $(du -h "$EXE" | cut -f1)"
+# 4.0 版本号（Info.plist 里应等于 $VER / $BUILDNO）
+PLVER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGE/Payload/Va11IOS.app/Info.plist" 2>/dev/null || echo '?')
+PLBUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STAGE/Payload/Va11IOS.app/Info.plist" 2>/dev/null || echo '?')
+[ "$PLVER" = "$VER" ] && [ "$PLBUILD" = "$BUILDNO" ] && say "  版本: $PLVER (build $PLBUILD) ✓" || { say "  🔴 版本不符: plist=$PLVER/$PLBUILD 期望=$VER/$BUILDNO"; }
 # 4.1 Mach-O 头 / 架构
 file "$EXE" | sed 's/^/  /' | sed 1!d >> "$R"; say "  file: $(grep -o 'Mach-O 64-bit executable arm64' <<< "$(file -b "$EXE")" || echo '✗ 非 arm64 可执行')"
 # 4.2 minOS 与代码签名槽（无签名 = 不该有 LC_CODE_SIGNATURE）
