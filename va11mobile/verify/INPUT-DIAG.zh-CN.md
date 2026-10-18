@@ -441,3 +441,22 @@ DM_NO_MOUSE=1：GetMouseStates 返回 0 条
 从标题进主菜单后选中 **New Game**（目前几次点按都落在 Load 页），然后用点按推进开场对白。
 
 无签名 ipa 已用该修复重打（17,019,361 B，sha256 前 24 位 `f3f19b2c192b6c8f66748e67`，结构校验 0 项红）。
+
+## 修复后的流程探索 + 交付物分发（2026-10-18 11:1x）
+
+修复（不再伪造鼠标）后，交互已经可以走流程，但也暴露了「菜单点击位置」问题：
+
+- 连续点按会进入 **LOAD（读档）界面**并停在那里（中点位置在 Load 页；`out/dl_48.png`）；
+- 按 **B 键**会退回/重启流程（`out/back_52.png` 回到 Ysbryd Games 发行商 logo），说明手柄 B 被游戏收到；
+- 单次点按有时直接进开场旁白（`out/tap_t23.png`：`A city that shouldn't exist…`），
+  有时落在 attract——取决于点按时刻是否正好在标题交互态。
+
+**结论**：输入链路已通（点按 + 手柄都生效）；剩下的是**点对菜单项**（New Game 的位置）
+与 attract 时机的对齐。下一轮做法：先点按一次进入主菜单 → 立即截图 → 按截图上 New Game 的实际位置补点。
+
+### 交付物分发（用户要求）
+- 无签名 ipa 已放 iCloud：`Va11IOS-unsigned-20261018-1105.ipa`（17,019,361 B，sha256 f3f19b2c…）
+- 游戏数据两份也放 iCloud：
+  - `Va11IOS-data-EN/game.win`（原版，497 MB，sha256 e860d56e709c1883…）
+  - `Va11IOS-data-CN/game.win`（汉化补丁版，497 MB，sha256 ff5220e0bc8e8d18…）
+  - 真机：装 App 后放进「文件 → 我的 iPhone → VA-11 → save/game.win」
