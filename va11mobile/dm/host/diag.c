@@ -472,6 +472,39 @@ static uint32_t dm_rd32(const uint8_t *p) { uint32_t w; memcpy(&w, p, 4); return
 // 在 guest 可写内存里搜某个 8 字节值（用来找「谁保存了这个值栈槽的指针」——很可能就是 GM 的参数栈指针全局）。
 // Search guest writable memory for an 8-byte value (to find who holds a value-stack slot pointer -- likely GM's argument
 // stack pointer global).
+// 搜「值落在 [vlo,vhi) 区间的指针」——用来找「谁保存了值栈（0x3f80… 那片槽池）的栈顶指针」，
+// 那个全局很可能就是 GM 的 argument/值栈指针。
+// Search for pointers whose value falls in [vlo,vhi) -- to find who keeps the value-stack (the 0x3f80... slot pool) top
+// pointer; that global is very likely GM's argument/value stack pointer.
+void dm_scan_range(uint64_t vlo, uint64_t vhi, uint64_t lo, uint64_t hi) {
+    int hits = 0;
+    mach_vm_address_t a = lo;
+    while (a < hi && hits < 24) {
+        mach_vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_port_t obj = MACH_PORT_NULL;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_vm_address_t ra = a;
+        kern_return_t kr = mach_vm_region(mach_task_self(), &ra, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj);
+        if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+        if (kr != KERN_SUCCESS) break;
+        a = ra + sz;
+        if (!(info.protection & VM_PROT_WRITE) || sz > (512u << 20)) continue;
+        uint64_t step = 4u << 20;
+        for (mach_vm_address_t p = ra; p < ra + sz && hits < 24; p += step) {
+            size_t n = (size_t)((ra + sz - p) < step ? (ra + sz - p) : step);
+            uint8_t *buf = malloc(n); if (!buf) break;
+            vm_size_t got = 0;
+            if (vm_read_overwrite(mach_task_self(), p, n, (vm_address_t)buf, &got) == KERN_SUCCESS) {
+                for (size_t i = 0; i + 8 <= got; i += 8) {
+                    uint64_t v; memcpy(&v, buf + i, 8);
+                    if (v >= vlo && v < vhi) {
+                        LOG("[va11] 指向值栈的指针：@%p = %p", (void *)(uintptr_t)(p + i), (void *)(uintptr_t)v);
+                        if (++hits >= 24) break;
+                    }
+                }
+            }
+            free(buf);
+        }
+    }
+}
 void dm_scan_value(uint64_t needle, uint64_t lo, uint64_t hi) {
     int hits = 0;
     mach_vm_address_t a = lo;
@@ -855,10 +888,12 @@ static void va11_array_obs(const uint64_t *regs) {
     // 用来看这批「参数/数组元素」到底长什么样（前面几个是 undefined、1.0 …）。
     // Dump the 8 values around the failing slot (each 0x10 bytes: +0 double, +8 tag/string pointer) to see what this
     // argument/array element batch actually looks like (undefined, 1.0, ...).
-    { uint8_t vsbuf[0x80]; vm_size_t vsg = 0;
-      if (vm_read_overwrite(mach_task_self(), (vm_address_t)(src - 0x20), sizeof vsbuf, (vm_address_t)vsbuf, &vsg) == KERN_SUCCESS && vsg == sizeof vsbuf) {
+    { uint8_t vsbuf[0x400]; vm_size_t vsg = 0;
+      // 往前多看 0x300 字节（48 个 value），找这片 value 数组的起点/对象头。
+      // Look 0x300 bytes back (48 values) to find the start of this value array / object header.
+      if (vm_read_overwrite(mach_task_self(), (vm_address_t)(src - 0x300), sizeof vsbuf, (vm_address_t)vsbuf, &vsg) == KERN_SUCCESS && vsg == sizeof vsbuf) {
         const uint8_t *vp = vsbuf;
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++) {   // 先看紧邻的 8 个（-2..+5），下面再看更前面的
             double dv; uint64_t lo8, hi8; uint32_t tag;
             memcpy(&dv, vp + i * 16, 8); memcpy(&lo8, vp + i * 16, 8);
             memcpy(&hi8, vp + i * 16 + 8, 8); memcpy(&tag, vp + i * 16 + 0xc, 4);
@@ -867,9 +902,22 @@ static void va11_array_obs(const uint64_t *regs) {
                 (unsigned long long)lo8, (unsigned long long)hi8, tag & 0xffffffu,
                 (tag & 0xffffffu) == 0xffffffu ? "（未定义）" : "");
         }
+        for (int i = 0; i < 0x30 - 2; i++) {   // -0x30..-3 里非填充的槽（找数组起点/对象头）
+            double dv; uint64_t lo8, hi8; uint32_t tag;
+            memcpy(&dv, vp + i * 16, 8); memcpy(&lo8, vp + i * 16, 8);
+            memcpy(&hi8, vp + i * 16 + 8, 8); memcpy(&tag, vp + i * 16 + 0xc, 4);
+            uint32_t t = tag & 0xffffffu;
+            if (t == 0x787878u) continue;                       // 未初始化填充，跳过
+            if (!lo8 && !hi8) continue;                        // 全零也跳过
+            LOG("[va11] 前槽%+d @%p：值=%g 原始=%016llx %016llx 标签=%#x", i - 0x30,
+                (void *)(uintptr_t)(src - 0x300 + i * 16), dv,
+                (unsigned long long)lo8, (unsigned long long)hi8, t);
+        }
       } }
 #if !TARGET_OS_IPHONE
     { void dm_scan_value(uint64_t, uint64_t, uint64_t); dm_scan_value(src, 0x100000000ull, 0x4000000000ull); }
+    { void dm_scan_range(uint64_t, uint64_t, uint64_t, uint64_t);
+      dm_scan_range(src & ~(uint64_t)0xFFFFF, (src & ~(uint64_t)0xFFFFF) + 0x100000, 0x100000000ull, 0x4000000000ull); }
 #endif
     LOG("[va11] 非数组索引：源描述符 %p 标签=%u 下标=%lld 目标=%p 调用者=%p 描述符内容=%016llx %016llx %016llx",
         (void *)(uintptr_t)src, tag, (long long)(int64_t)(int32_t)idx,
