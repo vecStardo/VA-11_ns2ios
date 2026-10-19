@@ -1,11 +1,11 @@
 # HD 震动（设置页）实现与验证
 
 > 结论：**宿主链路已接通并在模拟器上验证触发**（`[hid-vib]` + `[haptic]` 日志各一条/次点击）；
-> 模拟器没有触感马达，**真机手感待用户实机确认**。arm64 无签名出包结构校验 0 项红。
+> 真机（LiveContainer）已由用户实测确认有震动。arm64 无签名出包结构校验 0 项红。
 
 - 日期：2026-10-19
 - 环境：macOS / Xcode 26.3 / iPhone 17 Pro 模拟器 `VA11-User`（`DM_OPMODE=0` 掌机）；
-  arm64 Release 无签名包 `work/out/Va11IOS-1.0.0-unsigned.ipa`（build 130）。
+  arm64 Release 无签名包 `work/out/Va11IOS-1.1.0-unsigned.ipa`（build 132）。
 
 ## 1. 游戏侧调用链（UTMT 反编译 + runner 反汇编确认）
 
@@ -82,7 +82,8 @@ cd va11mobile/iosapp && ./build.sh
 
 ## 4. 已知边界 / 下一步
 
-- **真机触感未验证**：模拟器没有 Taptic Engine，只能证明 HLE 调用与前端调用发生；
+- **真机触感已确认**：用户实测设置页 HD 振动有震感；模拟器没有 Taptic Engine，只用于验证
+  HLE 调用与前端调用是否发生；
 - 原版语义下 `硬 → OFF` 那一次振幅为 0（游戏自己发 0），**不会震**，不是 bug；
 - 当前是「一次脉冲一次 impact」，不是持续 0.2 s 的连续震动；若要更像 Switch HD 震动，可后续换
   CoreHaptics 连续事件（需在 iOS 工程加 CoreHaptics framework，并保留 UIImpactFeedbackGenerator 兜底）；

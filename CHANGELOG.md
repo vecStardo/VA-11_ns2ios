@@ -3,9 +3,9 @@
 版本号规则：`MAJOR.MINOR.PATCH`（语义化）。构建号 `CFBundleVersion` = 当前 git 提交数（单调递增）。
 版本源头：`va11mobile/VERSION`（出包时 `build.sh` 读取，可用 `DM_VERSION=` 覆盖）。
 
-## 未发布 — 2026-10-19 · HD 震动
+## v1.1.0 — 2026-10-19 · HD 震动（小版本）
 
-### 已实现
+### 新增
 
 - **HD 震动**（标题 / 暂停菜单 → 设置 → HD 振动 / HD Rumble）：接通 `nn::hid` 的震动面
   （`IsVibrationPermitted` / `GetVibrationDeviceHandles` / `InitializeVibrationDevice` /
@@ -20,12 +20,15 @@
 - iOS 模拟器（VA11-User，`DM_OPMODE=0` 掌机）：标题 → 设置 → HD 振动（软 → 硬），
   `Documents/boot.txt` 出现 `[hid-vib] 首次震动：句柄=0x1002000 振幅=1.00` 与
   `[haptic] 前端震动：振幅 1.00 → 重 档，强度 1.00`，且一次点击只出现一条 `[haptic]`（去重生效）；
-- arm64 无签名出包 `Va11IOS-1.0.0-unsigned.ipa`（build 130）结构校验 0 项红，ad-hoc 自签演练通过。
+- 真机（LiveContainer）：用户在设置页实测 HD 振动，确认通过；
+- arm64 无签名出包 `Va11IOS-1.1.0-unsigned.ipa`（build 132 = 本版本提交数）
+  结构校验 0 项红，ad-hoc 自签演练通过。
 
-### 待办
+### 说明
 
-- 真机（Taptic Engine）手感待用户实机确认；模拟器无触感马达，只能验证调用链与日志；
-- 原版语义下「硬 → OFF」那一次振幅为 0、不会震，属预期行为。
+- 原版语义下「硬 → OFF」那一次振幅为 0、不会震，属预期行为；
+- 目前一次脉冲一次 impact，不是 0.2 s 连续震动；后续如需更接近 Switch HD 震动，
+  可评估 CoreHaptics 连续事件并保留 UIImpactFeedbackGenerator 兜底。
 
 ## v1.0.0 — 2026-10-20 · 首个正式版本（初版移植）
 

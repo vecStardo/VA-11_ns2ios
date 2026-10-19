@@ -4,8 +4,8 @@
 iPhone / iPad 上。本仓库提供该游戏（GameMaker / Switch 构建）的 iOS 兼容层，以及无签名 `.ipa`
 打包流水线。
 
-**版本：** `v1.0.0`（首个正式版本 · 初版移植） ·
-[Release](https://github.com/vecStardo/VA-11_ns2ios/releases/tag/v1.0.0) ·
+**版本：** `v1.1.0`（HD 震动 · 小版本） ·
+[Release](https://github.com/vecStardo/VA-11_ns2ios/releases/tag/v1.1.0) ·
 [更新日志](CHANGELOG.md) · English: [README.md](README.md)
 
 > **本仓库不包含任何游戏内容与密钥。**

@@ -45,7 +45,7 @@ targets:
         # 这里的值只是兜底默认，版本源头是 va11mobile/VERSION。
         # The version comes from build.sh via xcodebuild overrides; these are fallbacks, the source of truth is
         # va11mobile/VERSION.
-        MARKETING_VERSION: 1.0.0
+        MARKETING_VERSION: 1.1.0
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO

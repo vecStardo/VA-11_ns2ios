@@ -4,8 +4,8 @@ Run **your own** Nintendo Switch copy of *VA-11 HALL-A: Cyberpunk Bartender Acti
 iPhone and iPad. This repository contains an iOS compatibility layer for the GameMaker/Switch build
 of the game, plus an unsigned `.ipa` packaging pipeline.
 
-**Version:** `v1.0.0` (first official release — initial port) ·
-[Release](https://github.com/vecStardo/VA-11_ns2ios/releases/tag/v1.0.0) ·
+**Version:** `v1.1.0` (HD rumble) ·
+[Release](https://github.com/vecStardo/VA-11_ns2ios/releases/tag/v1.1.0) ·
 [Changelog](CHANGELOG.md) · 中文文档: [README.zh-CN.md](README.zh-CN.md)
 
 > **This repository contains no game content and no keys.**
